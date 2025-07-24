@@ -124,8 +124,8 @@ class Aggregator(nn.Module):
 
         # Note: We have two camera tokens, one for the first frame and one for the rest
         # The same applies for register tokens
-        self.camera_token = nn.Parameter(torch.randn(1, 2, 1, embed_dim))
-        self.register_token = nn.Parameter(torch.randn(1, 2, num_register_tokens, embed_dim))
+        self.camera_token = nn.Parameter(torch.randn(1, 2, 1, embed_dim)) # B, S, N, D四个维度。1: 一个 batch 内的所有图片共享1个 camera token; 2: camera token for first frame and the rest; 1: 每个frame只有1个camera token;
+        self.register_token = nn.Parameter(torch.randn(1, 2, num_register_tokens, embed_dim)) # num_register_tokens: 每个 frame 有 num_register_tokens 个 register token
 
         # The patch tokens start after the camera and register tokens
         self.patch_start_idx = 1 + num_register_tokens
