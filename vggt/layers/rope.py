@@ -105,11 +105,11 @@ class RotaryPositionEmbedding2D(nn.Module):
 
             # Generate position-dependent frequencies
             positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
-            angles = torch.einsum("i,j->ij", positions, inv_freq)
+            angles = torch.einsum("i,j->ij", positions, inv_freq) # (seq_len, dim // 2)
 
             # Compute and cache frequency components
             angles = angles.to(dtype)
-            angles = torch.cat((angles, angles), dim=-1)
+            angles = torch.cat((angles, angles), dim=-1) # (seq_len, dim)，直接拼接？
             cos_components = angles.cos().to(dtype)
             sin_components = angles.sin().to(dtype)
             self.frequency_cache[cache_key] = (cos_components, sin_components)
@@ -178,7 +178,7 @@ class RotaryPositionEmbedding2D(nn.Module):
         cos_comp, sin_comp = self._compute_frequency_components(feature_dim, max_position, tokens.device, tokens.dtype)
 
         # Split features for vertical and horizontal processing
-        vertical_features, horizontal_features = tokens.chunk(2, dim=-1)
+        vertical_features, horizontal_features = tokens.chunk(2, dim=-1) # 将 tokens 按最后一个维度分成两部分，分别表示垂直和水平特征
 
         # Apply RoPE separately for each dimension
         vertical_features = self._apply_1d_rope(vertical_features, positions[..., 0], cos_comp, sin_comp)
