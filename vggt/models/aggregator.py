@@ -93,6 +93,7 @@ class Aggregator(nn.Module):
                 for _ in range(depth)
             ]
         )
+        # attention block 在这里堆叠，堆叠 depth 层。
 
         self.global_blocks = nn.ModuleList(
             [
@@ -124,7 +125,7 @@ class Aggregator(nn.Module):
 
         # Note: We have two camera tokens, one for the first frame and one for the rest
         # The same applies for register tokens
-        self.camera_token = nn.Parameter(torch.randn(1, 2, 1, embed_dim)) # B, S, N, D四个维度。1: 一个 batch 内的所有图片共享1个 camera token; 2: camera token for first frame and the rest; 1: 每个frame只有1个camera token;
+        self.camera_token = nn.Parameter(torch.randn(1, 2, 1, embed_dim)) # B, S, N, D四个维度。1: 一个 batch 共享1个 camera token; 2: camera token for first frame and the rest; 1: 每个frame只有1个camera token;
         self.register_token = nn.Parameter(torch.randn(1, 2, num_register_tokens, embed_dim)) # num_register_tokens: 每个 frame 有 num_register_tokens 个 register token
 
         # The patch tokens start after the camera and register tokens
@@ -135,6 +136,7 @@ class Aggregator(nn.Module):
         nn.init.normal_(self.register_token, std=1e-6)
 
         # Register normalization constants as buffers
+        # 类似定义常量的操作，不过将常量定义在模型中，从而可以随模型文件一起管理
         for name, value in (("_resnet_mean", _RESNET_MEAN), ("_resnet_std", _RESNET_STD)):
             self.register_buffer(name, torch.FloatTensor(value).view(1, 1, 3, 1, 1), persistent=False)
 
@@ -207,7 +209,7 @@ class Aggregator(nn.Module):
         if isinstance(patch_tokens, dict):
             patch_tokens = patch_tokens["x_norm_patchtokens"]
 
-        _, P, C = patch_tokens.shape
+        _, P, C = patch_tokens.shape # B*S, Patch size, C_out
 
         # Expand camera and register tokens to match batch size and sequence length
         camera_token = slice_expand_and_flatten(self.camera_token, B, S)
@@ -219,11 +221,12 @@ class Aggregator(nn.Module):
         pos = None
         if self.rope is not None:
             pos = self.position_getter(B * S, H // self.patch_size, W // self.patch_size, device=images.device)
+            # 生成一张表，(B*S, H//p_s*W//p_s, 2)，记录当前坐标[x,y]
 
         if self.patch_start_idx > 0:
             # do not use position embedding for special tokens (camera and register tokens)
             # so set pos to 0 for the special tokens
-            pos = pos + 1
+            pos = pos + 1 # 把坐标从 (0,0) 开始变成从 (1,1) 开始，(0,0) 留给特殊 tokens
             pos_special = torch.zeros(B * S, self.patch_start_idx, 2).to(images.device).to(pos.dtype)
             pos = torch.cat([pos_special, pos], dim=1)
 
@@ -287,6 +290,7 @@ class Aggregator(nn.Module):
         """
         if tokens.shape != (B, S * P, C):
             tokens = tokens.view(B, S, P, C).view(B, S * P, C)
+        # 注意！这里和frame_attention不同，将向量 reshape 成 (B, S*P, C) 的形状。这保证了 Transformer 层在整个 S*P 上计算注意力，从而实现跨帧的信息交互。
 
         if pos is not None and pos.shape != (B, S * P, 2):
             pos = pos.view(B, S, P, 2).view(B, S * P, 2)
@@ -322,7 +326,7 @@ def slice_expand_and_flatten(token_tensor, B, S):
     # Slice out the "query" tokens => shape (1, 1, ...)
     query = token_tensor[:, 0:1, ...].expand(B, 1, *token_tensor.shape[2:])
     # Slice out the "other" tokens => shape (1, S-1, ...)
-    others = token_tensor[:, 1:, ...].expand(B, S - 1, *token_tensor.shape[2:])
+    others = token_tensor[:, 1:, ...].expand(B, S - 1, *token_tensor.shape[2:]) # 注意 expand 并不复制底层数据，而是创建指向同一数据的多个“引用”或“视图”
     # Concatenate => shape (B, S, ...)
     combined = torch.cat([query, others], dim=1)
 

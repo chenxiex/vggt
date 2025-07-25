@@ -109,7 +109,7 @@ class RotaryPositionEmbedding2D(nn.Module):
 
             # Compute and cache frequency components
             angles = angles.to(dtype)
-            angles = torch.cat((angles, angles), dim=-1) # (seq_len, dim)，直接拼接？
+            angles = torch.cat((angles, angles), dim=-1) # (seq_len, dim)，直接拼接？：这里的 tokens 是x1和x2的直接拼接。对于 RoPE 中 [x_1, x_2]如何扩展到高维的问题，它不像很多文章里说的那样用 [x_11, x_12, x_21, x_22, ...] 这样两两一组的方式扩展，而是直接将 x_1 和 x_2 分别扩展到 dim/2 的维度，变成 [x_1^{dim/2}, x_2^{dim/2}]。
             cos_components = angles.cos().to(dtype)
             sin_components = angles.sin().to(dtype)
             self.frequency_cache[cache_key] = (cos_components, sin_components)
@@ -178,7 +178,7 @@ class RotaryPositionEmbedding2D(nn.Module):
         cos_comp, sin_comp = self._compute_frequency_components(feature_dim, max_position, tokens.device, tokens.dtype)
 
         # Split features for vertical and horizontal processing
-        vertical_features, horizontal_features = tokens.chunk(2, dim=-1) # 将 tokens 按最后一个维度分成两部分，分别表示垂直和水平特征
+        vertical_features, horizontal_features = tokens.chunk(2, dim=-1) # 将 tokens 按最后一个维度分成两部分，分别表示垂直和水平特征。这里拆开完了每个特征还可以再拆开成 x_1 和 x_2，就像前面注释解释的那样，所以一个 tokens 要被对折两次，所以才要求 tokens 长度必须能被 4 整除。
 
         # Apply RoPE separately for each dimension
         vertical_features = self._apply_1d_rope(vertical_features, positions[..., 0], cos_comp, sin_comp)
