@@ -71,7 +71,7 @@ class Aggregator(nn.Module):
     ):
         super().__init__()
 
-        self.__build_patch_embed__(patch_embed, img_size, patch_size, num_register_tokens, embed_dim=embed_dim)
+        self.__build_patch_embed__(patch_embed, img_size, patch_size, num_register_tokens, embed_dim=embed_dim) # 为 self.path_embed 创建嵌入实例
 
         # Initialize rotary position embedding if frequency > 0
         self.rope = RotaryPositionEmbedding2D(frequency=rope_freq) if rope_freq > 0 else None
