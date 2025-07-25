@@ -3,7 +3,7 @@
 {
 	"name": "Miniconda (Python 3)",
 	"build": { 
-		"context": "..",
+		"context": "../..",
 		"dockerfile": "Dockerfile"
 	}
 
