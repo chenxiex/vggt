@@ -103,6 +103,7 @@ class CameraHead(nn.Module):
         Returns:
             list: List of activated camera encodings from each iteration.
         """
+        # 迭代求精：常用于需要高精度输出、问题本身具有可分解性的场景。
         B, S, C = pose_tokens.shape
         pred_pose_enc = None
         pred_pose_enc_list = []
