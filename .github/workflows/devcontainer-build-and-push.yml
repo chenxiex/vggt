@@ -7,7 +7,9 @@ on:
     paths:
       - ".github/.devcontainer/**"
       - ".github/workflows/devcontainer-build-and-push.yml"
-      - ".github/environment.yml"
+      - "environment.yml"
+      - "requirements.txt"
+      - "requirements_demo.txt"
 
 env:
   REGISTRY: ghcr.io
