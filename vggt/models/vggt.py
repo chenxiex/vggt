@@ -25,6 +25,7 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         self.point_head = DPTHead(dim_in=2 * embed_dim, output_dim=4, activation="inv_log", conf_activation="expp1") if enable_point else None
         self.depth_head = DPTHead(dim_in=2 * embed_dim, output_dim=2, activation="exp", conf_activation="expp1") if enable_depth else None
         self.track_head = TrackHead(dim_in=2 * embed_dim, patch_size=patch_size) if enable_track else None
+        # dim_in=2 * embed_dim: frame attention + global attention
 
     def forward(self, images: torch.Tensor, query_points: torch.Tensor = None):
         """
@@ -58,7 +59,7 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         if query_points is not None and len(query_points.shape) == 2:
             query_points = query_points.unsqueeze(0)
 
-        aggregated_tokens_list, patch_start_idx = self.aggregator(images)
+        aggregated_tokens_list, patch_start_idx = self.aggregator(images) # [depth, batch_size, seq_len, num_patches, embed_dim]，包含 embedding+alternating attention 两个步骤。frame attention 和 global attention 在 embed_dim 维度进行拼接
 
         predictions = {}
 

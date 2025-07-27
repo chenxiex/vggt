@@ -38,7 +38,7 @@ class CameraHead(nn.Module):
         super().__init__()
 
         if pose_encoding_type == "absT_quaR_FoV":
-            self.target_dim = 9
+            self.target_dim = 9 # 3平移+ 4旋转 + 2焦距
         else:
             raise ValueError(f"Unsupported camera encoding type: {pose_encoding_type}")
 
@@ -115,6 +115,7 @@ class CameraHead(nn.Module):
                 # Detach the previous prediction to avoid backprop through time.
                 pred_pose_enc = pred_pose_enc.detach()
                 module_input = self.embed_pose(pred_pose_enc)
+                # detach 保证每次迭代的反向传播不会影响之前的迭代
 
             # Generate modulation parameters and split them into shift, scale, and gate components.
             shift_msa, scale_msa, gate_msa = self.poseLN_modulation(module_input).chunk(3, dim=-1)
@@ -122,6 +123,7 @@ class CameraHead(nn.Module):
             # Adaptive layer normalization and modulation.
             pose_tokens_modulated = gate_msa * modulate(self.adaln_norm(pose_tokens), shift_msa, scale_msa)
             pose_tokens_modulated = pose_tokens_modulated + pose_tokens
+            # 自适应归一化：通过在归一化层中引入与模型输入相关的可学习参数（shift_msa, scale_msa, gate_msa），使得归一化过程能够根据输入的特征动态调整，从而增强模型的表达能力和适应性。由 DiT 论文提出。
 
             pose_tokens_modulated = self.trunk(pose_tokens_modulated)
             # Compute the delta update for the pose encoding.
