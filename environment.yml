@@ -5,4 +5,5 @@ dependencies:
   - pip
   - pip:
     - -r requirements.txt
+    - -r requirements_demo.txt
 prefix: /opt/conda
