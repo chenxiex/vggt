@@ -2,7 +2,7 @@
 // README at: https://github.com/devcontainers/templates/tree/main/src/miniconda
 {
 	"name": "Miniconda (Python 3)",
-	"image": "ghcr.io/chenxiex/vggt/devcontainer:latest"
+	"image": "ghcr.io/chenxiex/vggt/devcontainer:latest",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
@@ -18,4 +18,5 @@
 
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
+	"runArgs": ["--gpus", "all"]
 }
