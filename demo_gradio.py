@@ -32,7 +32,7 @@ print("Initializing and loading VGGT model...")
 model = VGGT()
 _HF_ENDPOINT=os.getenv("HF_ENDPOINT", "https://huggingface.co")
 _URL = f"{_HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
-model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+model.load_state_dict(torch.hub.load_state_dict_from_url(_URL, "./ckpt"))
 
 
 model.eval()
