@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/miniconda
 {
-	"name": "Miniconda (Python 3)",
+	"name": "VGGT",
 	"image": "ghcr.io/chenxiex/vggt/devcontainer:latest",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
@@ -11,7 +11,7 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "python --version",
+	"postCreateCommand": "python -m venv ~/.venv",
 
 	// Configure tool-specific properties.
 	// "customizations": {},
