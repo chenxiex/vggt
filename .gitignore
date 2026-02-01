@@ -1,7 +1,6 @@
 .hydra/
 output/
 ckpt/
-dependency/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 **/__pycache__/
@@ -148,3 +147,7 @@ skyseg.onnx
 # pixi environments
 .pixi
 *.egg-info
+
+# gradio
+.gradio/
+input_images_*/
