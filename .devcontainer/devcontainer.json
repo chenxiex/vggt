@@ -18,8 +18,11 @@
 
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
+
+	// Uncomment to use GPU support. Docker only. 
+	// "hostRequirements": {
+	// 	"gpu": "optional"
+	// }
+	// Podman doesn't support hostRequirements gpu yet, let's use runArgs
 	// "runArgs": ["--gpus", "all"]
-	"hostRequirements": {
-		"gpu": "optional"
-	}
 }
