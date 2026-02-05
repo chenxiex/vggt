@@ -13,7 +13,6 @@ import os
 import os.path as osp
 from glob import glob
 
-import ipdb
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm.auto import tqdm

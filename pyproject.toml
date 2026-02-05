@@ -7,7 +7,6 @@ dependencies = [
     "einops",
     "safetensors",
     "opencv-python",
-    "ipdb",
 ]
 name = "vggt"
 requires-python = ">= 3.10"
