@@ -26,6 +26,7 @@ class TrackHead(nn.Module):
         corr_levels=7,
         corr_radius=4,
         hidden_size=384,
+        pos_embed=True,
     ):
         """
         Initialize the TrackHead module.
@@ -53,7 +54,7 @@ class TrackHead(nn.Module):
             features=features,
             feature_only=True,  # Only output features, no activation
             down_ratio=2,  # Reduces spatial dimensions by factor of 2
-            pos_embed=False,
+            pos_embed=pos_embed,
         )
 
         # Tracker module that predicts point trajectories
