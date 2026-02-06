@@ -15,7 +15,7 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "uv venv --allow-existing",
+	"postCreateCommand": "uv venv --clear",
 
 	// Configure tool-specific properties.
 	// "customizations": {},
@@ -24,11 +24,14 @@
 	// "remoteUser": "root"
 
 	// UV cache directory
-	"containerEnv":{
-		"UV_CACHE_DIR": "/cache-uv",
-		"UV_LINK_MODE": "copy"
+	"remoteEnv":{
+		"UV_CACHE_DIR": "/cache/uv",
+		// Make a venv that is specific for this workspace path as the cache is shared
+        "UV_PROJECT_ENVIRONMENT": "/cache/venv-for-${localWorkspaceFolder}",
+		// Do the equivalent of "activate" the venv so we don't have to "uv run" everything
+        "VIRTUAL_ENV": "/cache/venv-for-${localWorkspaceFolder}"
 	},
 	"mounts": [
-		"source=${localEnv:HOME}/.cache/uv,target=/cache-uv,type=bind"
+		"source=${localEnv:HOME}/.cache/dev-shared-cache,target=/cache,type=bind"
 	]
 }
