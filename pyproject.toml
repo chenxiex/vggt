@@ -30,6 +30,11 @@ runtime = [
     "torch",
     "torchvision",
 ]
+evaluation = [
+    "lightglue",
+    "pyceres==2.3",
+    "pycolmap==3.10.0",
+]
 
 # Using setuptools as the build backend
 [build-system]
@@ -54,3 +59,7 @@ default = { solve-group = "default" }
 demo = { features = ["demo"], solve-group = "default" }
 
 [tool.pixi.tasks]
+
+# UV configuration
+[tool.uv.sources]
+lightglue = { git = "https://gh-proxy.org/https://github.com/cvg/LightGlue.git" }
