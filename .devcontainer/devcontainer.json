@@ -11,7 +11,7 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "python -m venv .venv --system-site-packages --upgrade",
+	"postCreateCommand": "uv venv --allow-existing"
 
 	// Configure tool-specific properties.
 	// "customizations": {},
