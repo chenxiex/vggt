@@ -27,9 +27,9 @@
 	"remoteEnv":{
 		"UV_CACHE_DIR": "/cache/uv",
 		// Make a venv that is specific for this workspace path as the cache is shared
-        "UV_PROJECT_ENVIRONMENT": "/cache/venv-for-${localWorkspaceFolder}",
+        "UV_PROJECT_ENVIRONMENT": "/cache/venv-for${localWorkspaceFolder}",
 		// Do the equivalent of "activate" the venv so we don't have to "uv run" everything
-        "VIRTUAL_ENV": "/cache/venv-for-${localWorkspaceFolder}"
+        "VIRTUAL_ENV": "/cache/venv-for${localWorkspaceFolder}"
 	},
 	"mounts": [
 		"source=${localEnv:HOME}/.cache/dev-shared-cache,target=/cache,type=bind"
