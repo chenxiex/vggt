@@ -26,6 +26,10 @@ demo = [
     "trimesh",
     "matplotlib",
 ]
+runtime = [
+    "torch",
+    "torchvision",
+]
 
 # Using setuptools as the build backend
 [build-system]
