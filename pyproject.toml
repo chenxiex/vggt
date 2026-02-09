@@ -62,4 +62,4 @@ demo = { features = ["demo"], solve-group = "default" }
 
 # UV configuration
 [tool.uv.sources]
-lightglue = { git = "https://gh-proxy.org/https://github.com/cvg/LightGlue.git" }
+lightglue = { git = "https://github.com/cvg/LightGlue.git" }
