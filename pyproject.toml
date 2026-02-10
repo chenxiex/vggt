@@ -32,6 +32,7 @@ runtime = [
 ]
 evaluation = [
     "lightglue",
+    "open3d>=0.19.0",
     "pyceres==2.3",
     "pycolmap==3.10.0",
 ]
@@ -62,4 +63,5 @@ demo = { features = ["demo"], solve-group = "default" }
 
 # UV configuration
 [tool.uv.sources]
-lightglue = { git = "https://github.com/cvg/LightGlue.git" }
+lightglue = { git = "https://gh-proxy.org/https://github.com/cvg/LightGlue.git" }
+
