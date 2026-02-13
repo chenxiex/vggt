@@ -32,6 +32,6 @@
         "VIRTUAL_ENV": "/cache/venv-for${localWorkspaceFolder}"
 	},
 	"mounts": [
-		"source=${localEnv:HOME}/.cache/dev-shared-cache,target=/cache,type=bind"
+		"source=${localEnv:HOME}/.cache,target=/cache,type=bind"
 	]
 }
