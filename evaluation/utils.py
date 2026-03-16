@@ -18,7 +18,7 @@ def load_model(model_path) -> VGGT:
     model = VGGT()
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-    model = model.to(device, dtype)
+    model = model.to(device)
     return model
 
 
