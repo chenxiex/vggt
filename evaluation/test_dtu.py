@@ -9,7 +9,7 @@ import argparse
 import logging
 import sys
 
-from utils import load_model, predict, read_pfm, upsample_images, write_ply, open3d_filter
+from .utils import load_model, predict, read_pfm, upsample_images, write_ply, open3d_filter
 
 logger = logging.getLogger(__name__)
 

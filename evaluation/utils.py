@@ -2,7 +2,7 @@ from vggt.models.vggt import VGGT
 import torch
 from typing import List
 from pathlib import Path
-from memory_profiler import PredictionMemoryProfiler
+from .memory_profiler import PredictionMemoryProfiler
 from vggt.utils.load_fn import load_and_preprocess_images
 import re
 import numpy as np
