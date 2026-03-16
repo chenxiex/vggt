@@ -143,6 +143,7 @@ dmypy.json
 **/tmp/
 **/outputs/skyseg.onnx
 skyseg.onnx
+data/
 
 # pixi environments
 .pixi

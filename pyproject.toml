@@ -35,6 +35,12 @@ evaluation = [
     "open3d>=0.19.0",
     "pyceres==2.3",
     "pycolmap==3.10.0",
+    "torch",
+    "tqdm",
+    "open3d",
+    "scipy",
+    "scikit-learn",
+    "plyfile"
 ]
 
 # Using setuptools as the build backend
