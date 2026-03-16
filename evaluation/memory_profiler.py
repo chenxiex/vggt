@@ -51,6 +51,15 @@ def _format_mib(value_mib: Optional[float]) -> str:
     return f"{value_mib:.2f} MiB"
 
 
+def _shorten_timeline_label(label: str) -> str:
+    label = label.replace("aggregator.frame_blocks.", "fb")
+    label = label.replace("aggregator.global_blocks.", "gb")
+    label = label.replace("aggregator.patch_embed", "pe")
+    label = label.replace(":pre", "\u2193")
+    label = label.replace(":post", "\u2191")
+    return label
+
+
 def _tensor_num_bytes(tensor: torch.Tensor) -> int:
     return tensor.nelement() * tensor.element_size()
 
@@ -89,6 +98,7 @@ class PredictionMemoryProfiler:
         self._handles: List[Any] = []
         self._observed_allocated_values: List[int] = []
         self._observed_reserved_values: List[int] = []
+        self._timeline: List[Dict[str, Any]] = []
         self.stats: Dict[str, Any] = {
             "enabled": self.enabled,
             "active": self.active,
@@ -145,6 +155,16 @@ class PredictionMemoryProfiler:
         self._observed_allocated_values.append(peak["peak_allocated_bytes"])
         self._observed_reserved_values.append(peak["peak_reserved_bytes"])
 
+    def _record_timeline_entry(self, label: str, memory: Dict[str, Any]) -> None:
+        if not self.active:
+            return
+        self._timeline.append({
+            "seq": len(self._timeline),
+            "label": label,
+            "allocated_mib": memory["allocated_mib"],
+            "reserved_mib": memory["reserved_mib"],
+        })
+
     def record_snapshot(self, label: str) -> None:
         if not self.active:
             return
@@ -153,6 +173,7 @@ class PredictionMemoryProfiler:
         snapshot = _cuda_current_memory(self._device)
         self.stats["snapshots"][label] = snapshot
         self._remember_current_memory(snapshot)
+        self._record_timeline_entry(label, snapshot)
 
     def record_input_metadata(self, images: torch.Tensor, image_paths: List[Path]) -> None:
         self.stats["inputs"] = {
@@ -192,6 +213,7 @@ class PredictionMemoryProfiler:
             module_stats["calls"] += 1
             module_stats["before"] = before
             self._remember_current_memory(before)
+            self._record_timeline_entry(f"{module_name}:pre", before)
             torch.cuda.reset_peak_memory_stats(self._device)
 
         def post_hook(_module, _inputs, _output):
@@ -209,6 +231,7 @@ class PredictionMemoryProfiler:
 
             self._remember_current_memory(after)
             self._remember_peak_memory(peak)
+            self._record_timeline_entry(f"{module_name}:post", after)
 
         self._handles.append(module.register_forward_pre_hook(pre_hook))
         self._handles.append(module.register_forward_hook(post_hook))
@@ -374,7 +397,7 @@ class PredictionMemoryProfiler:
             if module_stats["peak_delta_allocated_mib"] is not None
         ]
         snapshots = self._selected_snapshots()
-        if not module_peaks and not snapshots:
+        if not module_peaks and not snapshots and not self._timeline:
             return None
 
         try:
@@ -387,7 +410,7 @@ class PredictionMemoryProfiler:
             chart_path = artifact_stem.with_name(artifact_stem.name + "_chart").with_suffix(".png")
             chart_path.parent.mkdir(parents=True, exist_ok=True)
 
-            figure, axes = plt.subplots(2, 1, figsize=(14, 10), constrained_layout=True)
+            figure, axes = plt.subplots(3, 1, figsize=(14, 16), constrained_layout=True)
 
             if snapshots:
                 snapshot_labels = [label for label, _snapshot in snapshots]
@@ -402,16 +425,36 @@ class PredictionMemoryProfiler:
             else:
                 axes[0].set_axis_off()
 
+            if self._timeline:
+                n = len(self._timeline)
+                seqs = list(range(n))
+                alloc_mib = [entry["allocated_mib"] for entry in self._timeline]
+                res_mib = [entry["reserved_mib"] for entry in self._timeline]
+                axes[1].plot(seqs, alloc_mib, linewidth=1, label="allocated")
+                axes[1].plot(seqs, res_mib, linewidth=1, label="reserved")
+                step = max(1, n // 30)
+                tick_idxs = list(range(0, n, step))
+                if (n - 1) not in tick_idxs:
+                    tick_idxs.append(n - 1)
+                tick_labels = [_shorten_timeline_label(self._timeline[i]["label"]) for i in tick_idxs]
+                axes[1].set_xticks(tick_idxs)
+                axes[1].set_xticklabels(tick_labels, rotation=75, ha="right", fontsize=7)
+                axes[1].set_title("Per-Layer Memory Usage Timeline")
+                axes[1].set_ylabel("MiB")
+                axes[1].legend()
+            else:
+                axes[1].set_axis_off()
+
             if module_peaks:
                 module_peaks.sort(key=lambda item: item["peak_delta_allocated_mib"], reverse=True)
                 labels = [module_stats["name"] for module_stats in module_peaks]
                 values = [module_stats["peak_delta_allocated_mib"] for module_stats in module_peaks]
-                axes[1].bar(labels, values)
-                axes[1].set_title("Module Peak Delta Allocated Memory")
-                axes[1].set_ylabel("MiB")
-                axes[1].tick_params(axis="x", rotation=75)
+                axes[2].bar(labels, values)
+                axes[2].set_title("Module Peak Delta Allocated Memory")
+                axes[2].set_ylabel("MiB")
+                axes[2].tick_params(axis="x", rotation=75)
             else:
-                axes[1].set_axis_off()
+                axes[2].set_axis_off()
 
             figure.savefig(chart_path, dpi=150)
             plt.close(figure)
@@ -449,6 +492,7 @@ class PredictionMemoryProfiler:
                 "observed_peak_reserved_bytes": overall_reserved_bytes,
                 "observed_peak_reserved_mib": _bytes_to_mib(overall_reserved_bytes),
             }
+            self.stats["timeline"] = self._timeline
 
         if self.enabled:
             self._emit_report()
