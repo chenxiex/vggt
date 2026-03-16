@@ -6,8 +6,11 @@ import os
 import numpy as np
 from PIL import Image
 import argparse
+import logging
 
-from utils import load_model, predict, read_pfm, upsample_images, filter_depth, write_ply
+from utils import load_model, predict, read_pfm, upsample_images, write_ply, open3d_filter
+
+logger = logging.getLogger(__name__)
 
 
 def save_predictions(results_path: Path, scene_name: str, predictions, sample_no):
@@ -153,72 +156,8 @@ def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
     return projs, rgbs
 
 
-def extract_points(pc, mask, rgb):
-    pc = pc.cpu()
-    mask = mask.cpu()
-    rgb = rgb.cpu()
-
-    pc = pc.numpy()
-    mask = mask.numpy()
-    rgb = rgb.numpy()
-
-    mask = np.reshape(mask, (-1,))
-    pc = np.reshape(pc, (-1, 3))
-    rgb = np.reshape(rgb, (-1, 3))
-
-    points = pc[np.where(mask)]
-    colors = rgb[np.where(mask)]
-
-    points_with_color = np.concatenate([points, colors], axis=1)
-
-    return points_with_color
-
-
-def open3d_filter(depths: torch.Tensor, projs: torch.Tensor, rgbs: torch.Tensor, dist_thresh: float = 1.0, batch_size: int = 20, num_consist: int = 4):
-    with torch.no_grad():
-        tot_frame = depths.shape[0]
-        height, width = depths.shape[2], depths.shape[3]
-        points = []
-
-        print(f"Scene:{scene_name}, total frame:{tot_frame}")
-        for i in range(tot_frame):
-            pc_buff = torch.zeros((3, height, width),
-                                  device=depths.device, dtype=depths.dtype)
-            val_cnt = torch.zeros((1, height, width),
-                                  device=depths.device, dtype=depths.dtype)
-            j = 0
-
-            while True:
-                ref_pc, pcs, dist = filter_depth(
-                    ref_depth=depths[i:i+1],
-                    src_depths=depths[j:min(j+batch_size, tot_frame)],
-                    ref_proj=projs[i:i+1],
-                    src_projs=projs[j:min(j+batch_size, tot_frame)]
-                )
-
-                depth_mask = (dist < dist_thresh).float()
-
-                masks = depth_mask
-
-                masked_pc = pcs * masks
-                pc_buff += masked_pc.sum(dim=0, keepdim=False)
-                val_cnt += masks.sum(dim=0, keepdim=False)
-
-                j += batch_size
-                if j >= tot_frame:
-                    break
-
-            final_mask = (val_cnt >= num_consist).squeeze(0)
-            avg_points = torch.div(pc_buff, val_cnt).permute(1, 2, 0)
-
-            final_pc = extract_points(avg_points, final_mask, rgbs[i])
-            points.append(final_pc)
-
-        points = np.concatenate(points, axis=0)
-        return points
-
-
 if __name__ == "__main__":
+    logger.setLevel(logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--dtu_test_1200_path", type=Path,
                         required=True, help="Path to the DTU testing dataset")
@@ -237,7 +176,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:
-        raise ValueError("Model path must be provided if not skipping prediction.")
+        raise ValueError(
+            "Model path must be provided if not skipping prediction.")
 
     if args.scans:
         scene_names = [f"scan{i}" for i in args.scans]
@@ -247,7 +187,9 @@ if __name__ == "__main__":
 
     for scene_name in scene_names:
         # 推理
+        logger.info(f"Processing {scene_name}...")
         if not args.no_pred:
+            logger.info("Predicting depth maps...")
             model = load_model(args.model_path)
             images_path = args.dtu_test_1200_path/"Rectified"/scene_name
             sample_no = random.sample(range(0, 49), args.sample_size)
@@ -259,10 +201,12 @@ if __name__ == "__main__":
             del model
             torch.cuda.empty_cache()
         else:
+            logger.info("Loading predictions...")
             predictions, sample_no = load_predictions(
                 args.results_path, scene_name)
 
         # 对齐
+        logger.info("Aligning predicted depth maps to ground truth...")
         gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
         gt_depth = load_gt_depth(gt_depths_path, sample_no)
         gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
@@ -291,9 +235,11 @@ if __name__ == "__main__":
         depths = depths.unsqueeze(1)
 
         # 点云融合
+        logger.info("Fusing depth maps into point cloud and saving results...")
         projs, rgbs = load_data(args.dtu_test_1200_path, scene_name, sample_no)
         points = open3d_filter(depths, projs, rgbs,
                                dist_thresh=1.0, batch_size=20, num_consist=4)
         write_ply(args.results_path /
                   f"vggt{int(scene_name[4:]):03d}_l3.ply", points)
-        print(f"Finished processing {scene_name}, written to "+f"vggt{int(scene_name[4:]):03d}_l3.ply")
+        logger.info(f"Finished processing {scene_name}, written to " +
+                    f"vggt{int(scene_name[4:]):03d}_l3.ply")

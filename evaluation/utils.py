@@ -210,3 +210,67 @@ def write_ply(file: Path, points):
     pcd.points = o3d.utility.Vector3dVector(points[:, :3])
     pcd.colors = o3d.utility.Vector3dVector(points[:, 3:] / 255.)
     o3d.io.write_point_cloud(file, pcd, write_ascii=False)
+
+
+def extract_points(pc, mask, rgb):
+    pc = pc.cpu()
+    mask = mask.cpu()
+    rgb = rgb.cpu()
+
+    pc = pc.numpy()
+    mask = mask.numpy()
+    rgb = rgb.numpy()
+
+    mask = np.reshape(mask, (-1,))
+    pc = np.reshape(pc, (-1, 3))
+    rgb = np.reshape(rgb, (-1, 3))
+
+    points = pc[np.where(mask)]
+    colors = rgb[np.where(mask)]
+
+    points_with_color = np.concatenate([points, colors], axis=1)
+
+    return points_with_color
+
+
+def open3d_filter(depths: torch.Tensor, projs: torch.Tensor, rgbs: torch.Tensor, dist_thresh: float = 1.0, batch_size: int = 20, num_consist: int = 4):
+    with torch.no_grad():
+        tot_frame = depths.shape[0]
+        height, width = depths.shape[2], depths.shape[3]
+        points = []
+
+        for i in range(tot_frame):
+            pc_buff = torch.zeros((3, height, width),
+                                  device=depths.device, dtype=depths.dtype)
+            val_cnt = torch.zeros((1, height, width),
+                                  device=depths.device, dtype=depths.dtype)
+            j = 0
+
+            while True:
+                ref_pc, pcs, dist = filter_depth(
+                    ref_depth=depths[i:i+1],
+                    src_depths=depths[j:min(j+batch_size, tot_frame)],
+                    ref_proj=projs[i:i+1],
+                    src_projs=projs[j:min(j+batch_size, tot_frame)]
+                )
+
+                depth_mask = (dist < dist_thresh).float()
+
+                masks = depth_mask
+
+                masked_pc = pcs * masks
+                pc_buff += masked_pc.sum(dim=0, keepdim=False)
+                val_cnt += masks.sum(dim=0, keepdim=False)
+
+                j += batch_size
+                if j >= tot_frame:
+                    break
+
+            final_mask = (val_cnt >= num_consist).squeeze(0)
+            avg_points = torch.div(pc_buff, val_cnt).permute(1, 2, 0)
+
+            final_pc = extract_points(avg_points, final_mask, rgbs[i])
+            points.append(final_pc)
+
+        points = np.concatenate(points, axis=0)
+        return points
