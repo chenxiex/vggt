@@ -17,7 +17,17 @@ download_and_extract()
     local output_path="$2"
     local extract_dir="$3"
 
-    curl -L -o "${output_path}" "${url}"
+    if [[ -d "${extract_dir}" ]]; then
+        echo "Directory ${extract_dir} already exists. Skipping download and extraction."
+        return
+    fi
+    
+    if [[ -f "${output_path}" ]]; then
+        echo "File ${output_path} already exists. Skipping download."
+    else
+        echo "Downloading ${url} to ${output_path}..."
+        curl -L -o "${output_path}" "${url}"
+    fi
     mkdir -p "${extract_dir}"
     unzip -o "${output_path}" -d "${extract_dir}"
 
