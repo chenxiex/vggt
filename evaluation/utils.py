@@ -9,6 +9,11 @@ import numpy as np
 from PIL import Image
 import torch.nn.functional as F
 import open3d as o3d
+from urllib.request import urlretrieve
+import os
+
+HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
+MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
@@ -18,6 +23,11 @@ else:
 
 
 def load_model(model_path) -> VGGT:
+    model_path = Path(model_path)
+    if not model_path.exists():
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        urlretrieve(MODEL_URL, model_path)
+
     model = VGGT()
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
