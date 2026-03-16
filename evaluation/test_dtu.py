@@ -145,7 +145,7 @@ def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
 
     for view in sample_no:
         img_file = dtu_test_1200_path / \
-            f"Rectified/{scene_name}/rect_{view:03d}_3_r5000.png"
+            f"Rectified/{scene_name}/rect_{view+1:03d}_3_r5000.png"
         cam_file = dtu_test_1200_path/f"Cameras/{view:08}_cam.txt"
 
         extr_mat, intr_mat = parse_cam(cam_file)
