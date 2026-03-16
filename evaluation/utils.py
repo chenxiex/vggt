@@ -2,6 +2,7 @@ from vggt.models.vggt import VGGT
 import torch
 from typing import List
 from pathlib import Path
+from evaluation.memory_profiler import PredictionMemoryProfiler
 from vggt.utils.load_fn import load_and_preprocess_images
 import re
 import numpy as np
@@ -25,13 +26,29 @@ def load_model(model_path) -> VGGT:
 
 
 def predict(images_path: List[Path], model: VGGT):
+    profiler = PredictionMemoryProfiler(model, device=device, dtype=dtype)
+    profiler.record_snapshot("before_predict")
+
     sampled_image_names = [str(p) for p in images_path]
     images = load_and_preprocess_images(sampled_image_names).to(device)
+    profiler.record_input_metadata(images, images_path)
+    profiler.record_snapshot("after_input_to_device")
 
-    with torch.no_grad():
-        with torch.amp.autocast('cuda', dtype=dtype): # pyright: ignore[reportPrivateImportUsage]
-            # Predict attributes including cameras, depth maps, and point maps
-            predictions = model(images)
+    profiler.install_hooks()
+
+    try:
+        with torch.no_grad():
+            profiler.record_snapshot("before_model_forward")
+            with torch.amp.autocast('cuda', dtype=dtype): # pyright: ignore[reportPrivateImportUsage]
+                # Predict attributes including cameras, depth maps, and point maps
+                predictions = model(images)
+            profiler.record_snapshot("after_model_forward")
+    except Exception as exc:
+        profiler.record_error(exc)
+        raise
+    finally:
+        profiler.remove_hooks()
+        profiler.finalize()
     return predictions
 
 
