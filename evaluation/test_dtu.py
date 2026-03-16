@@ -7,10 +7,20 @@ import numpy as np
 from PIL import Image
 import argparse
 import logging
+import sys
 
 from utils import load_model, predict, read_pfm, upsample_images, write_ply, open3d_filter
 
 logger = logging.getLogger(__name__)
+
+
+def configure_logging(level: int = logging.INFO):
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
 
 
 def save_predictions(results_path: Path, scene_name: str, predictions, sample_no):
@@ -85,7 +95,7 @@ def align_pred_to_gt(
     pred_masked = pred_depth[valid_mask]
 
     if len(gt_masked) < min_valid_pixels:
-        print(
+        logger.warning(
             f"Warning: Not enough valid pixels ({len(gt_masked)} < {min_valid_pixels}) to align. "
             "Using all pixels."
         )
@@ -94,7 +104,7 @@ def align_pred_to_gt(
 
     # Handle case where pred_masked has no variance (e.g., all zeros or a constant value)
     if np.std(pred_masked) < 1e-6:  # Small epsilon to check for near-constant values
-        print(
+        logger.warning(
             "Warning: Predicted depth values in the valid mask have near-zero variance. "
             "Scale is ill-defined. Setting scale=1 and solving for shift only."
         )
@@ -108,7 +118,7 @@ def align_pred_to_gt(
                 A, gt_masked, rcond=None)
             scale, shift = x[0], x[1]
         except np.linalg.LinAlgError as e:
-            print(
+            logger.warning(
                 f"Warning: Least squares alignment failed ({e}). Returning original prediction.")
             return np.nan, np.nan
 
@@ -157,6 +167,7 @@ def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
 
 
 if __name__ == "__main__":
+    configure_logging()
     logger.setLevel(logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--dtu_test_1200_path", type=Path,
