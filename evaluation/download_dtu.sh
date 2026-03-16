@@ -22,12 +22,13 @@ download_and_extract()
         return
     fi
     
+    mkdir -p "$(dirname "${output_path}")"
     if [[ -f "${output_path}" ]]; then
-        echo "File ${output_path} already exists. Skipping download."
+        echo "Resuming download ${url} to ${output_path}..."
     else
         echo "Downloading ${url} to ${output_path}..."
-        curl -L -o "${output_path}" "${url}"
     fi
+    curl -L -C - -o "${output_path}" "${url}"
     mkdir -p "${extract_dir}"
     unzip -o "${output_path}" -d "${extract_dir}"
 
@@ -42,7 +43,7 @@ download_and_extract()
 }
 
 # https://github.com/JiayuYANG/CVP-MVSNet?tab=readme-ov-file#2-download-testing-dataset
-download_and_extract "https://modelscope.cn/datasets/anlorsp/dtu-test-1200/resolve/master/dtu-test-1200.zip" "${output}/dtu-test-1200.zip" "${output}/dtu-test-1200"
+download_and_extract "https://www.kaggle.com/api/v1/datasets/download/chenxiex/dtu-test-1200" "${output}/dtu-test-1200.zip" "${output}/dtu-test-1200"
 
 # https://github.com/alibaba/cascade-stereo/blob/master/CasMVSNet/README.md#training
 download_and_extract "https://virutalbuy-public.oss-cn-hangzhou.aliyuncs.com/share/cascade-stereo/CasMVSNet/dtu_data/dtu_train_hr/Depths_raw.zip" "${output}/dtu_depths_raw.zip" "${output}/dtu_depths_raw"
