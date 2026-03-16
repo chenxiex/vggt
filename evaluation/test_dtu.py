@@ -221,10 +221,12 @@ if __name__ == "__main__":
         gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
         gt_depth = load_gt_depth(gt_depths_path, sample_no)
         gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
+        depths = predictions['depth'][0]
+        conf = predictions['depth_conf'][0]
         upsampled_pred_depth = upsample_images(
-            predictions["depth"], gt_depth_w, gt_depth_h)
+            depths, gt_depth_w, gt_depth_h)
         upsampled_depth_conf = upsample_images(
-            predictions["depth_conf"], gt_depth_w, gt_depth_h)
+            conf, gt_depth_w, gt_depth_h)
 
         valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
 

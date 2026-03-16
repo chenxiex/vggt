@@ -10,8 +10,10 @@ import torch.nn.functional as F
 import open3d as o3d
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-dtype = torch.bfloat16 if torch.cuda.get_device_capability()[
-    0] >= 8 else torch.float16
+if torch.cuda.is_available():
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+else:
+    dtype = torch.float32
 
 
 def load_model(model_path) -> VGGT:
