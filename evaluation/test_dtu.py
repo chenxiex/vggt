@@ -257,6 +257,7 @@ if __name__ == "__main__":
             save_predictions(args.results_path, scene_name,
                              predictions, sample_no)
             del model
+            torch.cuda.empty_cache()
         else:
             predictions, sample_no = load_predictions(
                 args.results_path, scene_name)
