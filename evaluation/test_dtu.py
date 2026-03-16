@@ -227,7 +227,7 @@ if __name__ == "__main__":
     parser.add_argument("--results_path", type=Path, required=True,
                         help="Path to save the DTU testing results")
     parser.add_argument("--model_path", type=Path,
-                        required=True, help="Path to the trained VGGT model")
+                        required=False, help="Path to the trained VGGT model")
     parser.add_argument("--sample_size", type=int, default=49,
                         help="Sample size for prediction")
     parser.add_argument("--no_pred", action="store_true",
@@ -235,6 +235,9 @@ if __name__ == "__main__":
     parser.add_argument("--scans", type=int, nargs='+', required=False,
                         help="Scene ID numbers to evaluate (e.g., 1 2 3)")
     args = parser.parse_args()
+
+    if not args.no_pred and not args.model_path:
+        raise ValueError("Model path must be provided if not skipping prediction.")
 
     if args.scans:
         scene_names = [f"scan{i}" for i in args.scans]
