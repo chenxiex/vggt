@@ -135,7 +135,7 @@ def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
 
     for view in sample_no:
         img_file = dtu_test_1200_path / \
-            f"Rectified/{scene_name}/rect_f{view:03d}_3_r5000.png"
+            f"Rectified/{scene_name}/rect_{view:03d}_3_r5000.png"
         cam_file = dtu_test_1200_path/f"Cameras/{view:08}_cam.txt"
 
         extr_mat, intr_mat = parse_cam(cam_file)
@@ -194,7 +194,7 @@ if __name__ == "__main__":
             images_path = args.dtu_test_1200_path/"Rectified"/scene_name
             sample_no = random.sample(range(0, 49), args.sample_size)
             sampled_image_paths = [
-                images_path/f"rect_f{i:03d}_3_r5000.png" for i in sample_no]
+                images_path/f"rect_{i:03d}_3_r5000.png" for i in sample_no]
             predictions = predict(sampled_image_paths, model)
             save_predictions(args.results_path, scene_name,
                              predictions, sample_no)
