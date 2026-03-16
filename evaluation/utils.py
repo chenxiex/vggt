@@ -22,8 +22,7 @@ else:
     dtype = torch.float32
 
 
-def load_model(model_path) -> VGGT:
-    model_path = Path(model_path)
+def load_model(model_path:Path) -> VGGT:
     if not model_path.exists():
         model_path.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(MODEL_URL, model_path)
