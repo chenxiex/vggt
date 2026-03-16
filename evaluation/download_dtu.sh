@@ -52,3 +52,6 @@ download_and_extract "https://virutalbuy-public.oss-cn-hangzhou.aliyuncs.com/sha
 download_and_extract "http://roboimagedata2.compute.dtu.dk/data/MVS/SampleSet.zip" "${output}/dtu_sample.zip" "${output}/dtu_sample"
 download_and_extract "http://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip" "${output}/dtu_points.zip" "${output}/dtu_points"
 cp -r "${output}/dtu_points/Points/stl/"* "${output}/dtu_sample/SampleSet/MVS Data/Points/stl/"
+rm -r "${output}/dtu_points"
+
+rm "${output}/dtu-test-1200.zip" "${output}/dtu_depths_raw.zip" "${output}/dtu_sample.zip" "${output}/dtu_points.zip"
