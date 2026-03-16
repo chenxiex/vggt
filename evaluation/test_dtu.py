@@ -203,9 +203,9 @@ if __name__ == "__main__":
             logger.info("Predicting depth maps...")
             model = load_model(args.model_path)
             images_path = args.dtu_test_1200_path/"Rectified"/scene_name
-            sample_no = random.sample(range(1, 50), args.sample_size)
+            sample_no = random.sample(range(0, 49), args.sample_size)
             sampled_image_paths = [
-                images_path/f"rect_{i:03d}_3_r5000.png" for i in sample_no]
+                images_path/f"rect_{i+1:03d}_3_r5000.png" for i in sample_no]
             predictions = predict(sampled_image_paths, model)
             save_predictions(args.results_path, scene_name,
                              predictions, sample_no)
