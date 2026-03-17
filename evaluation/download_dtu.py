@@ -4,8 +4,52 @@ import argparse
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZipFile
+
+
+@dataclass
+class DatasetSpec:
+    extract_dir: str  # subdirectory name under output
+    zip_name: str     # local zip filename (non-MS)
+    url: str          # direct download URL (non-MS)
+    ms_repo: str      # ModelScope repository (owner/name)
+    ms_file: str      # filename within the ModelScope repository
+
+
+DATASETS: list[DatasetSpec] = [
+    DatasetSpec(
+        extract_dir="dtu-test-1200",
+        zip_name="dtu-test-1200.zip",
+        url="https://www.kaggle.com/api/v1/datasets/download/chenxiex/dtu-test-1200",
+        ms_repo="anlorsp/dtu-test-1200",
+        ms_file="dtu-test-1200.zip",
+    ),
+    DatasetSpec(
+        extract_dir="dtu-depths-raw",
+        zip_name="dtu-depths-raw.zip",
+        url="https://virutalbuy-public.oss-cn-hangzhou.aliyuncs.com/share/cascade-stereo/CasMVSNet/dtu_data/dtu_train_hr/Depths_raw.zip",
+        ms_repo="anlorsp/dtu-depths-raw",
+        ms_file="Depths_raw.zip",
+    ),
+    DatasetSpec(
+        extract_dir="dtu-sample",
+        zip_name="dtu-sample.zip",
+        url="http://roboimagedata2.compute.dtu.dk/data/MVS/SampleSet.zip",
+        ms_repo="anlorsp/dtu-sample",
+        ms_file="dtu-sample.zip",
+    ),
+]
+
+# Only needed for non-MS path: Points are already merged in the MS sample dataset
+_POINTS_SPEC = DatasetSpec(
+    extract_dir="dtu-points",
+    zip_name="dtu-points.zip",
+    url="http://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip",
+    ms_repo="",
+    ms_file="",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -16,11 +60,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Cache directory for temporary zip files (default: same as --output)",
     )
+    parser.add_argument(
+        "--ms",
+        action="store_true",
+        help="Download from ModelScope mirror instead of original sources",
+    )
     return parser.parse_args()
 
 
 def get_remote_content_length(url: str) -> int | None:
-    """Fetch Content-Length header from remote file."""
+    """Fetch Content-Length header from remote URL."""
     try:
         result = subprocess.run(
             ["curl", "-sI", "-L", url],
@@ -38,14 +87,13 @@ def get_remote_content_length(url: str) -> int | None:
 
 
 def is_download_complete(url: str, local_path: Path) -> bool:
-    """Check if local file matches remote file size."""
+    """Check if local file size matches the remote Content-Length."""
     if not local_path.exists():
         return False
     remote_size = get_remote_content_length(url)
     if remote_size is None:
         return False
-    local_size = local_path.stat().st_size
-    return local_size == remote_size
+    return local_path.stat().st_size == remote_size
 
 
 def download_with_resume(url: str, output_path: Path) -> None:
@@ -57,16 +105,43 @@ def download_with_resume(url: str, output_path: Path) -> None:
         print(f"Resuming download {url} to {output_path}...")
     else:
         print(f"Downloading {url} to {output_path}...")
-
-    cmd = ["curl", "-L", "-C", "-", "-o", str(output_path), url]
-    subprocess.run(cmd, check=True)
+    subprocess.run(["curl", "-L", "-C", "-", "-o", str(output_path), url], check=True)
 
 
-def flatten_nested_directory(extract_dir: Path, output_path: Path) -> None:
-    nested_dir = extract_dir / output_path.stem
+def download_from_modelscope(ms_repo: str, ms_file: str, cache: Path) -> Path:
+    """Download a file from ModelScope to cache and return its local path."""
+    local_zip = cache / Path(ms_file).name
+    if local_zip.exists():
+        print(f"File already in cache: {local_zip}")
+        return local_zip
+    print(f"Downloading {ms_repo}/{ms_file} from ModelScope...")
+    subprocess.run(
+        ["modelscope", "download", "--dataset", ms_repo, "--include", ms_file, "--local_dir", str(cache)],
+        check=True,
+    )
+    return local_zip
+
+
+def get_zip_path(spec: DatasetSpec, cache: Path, use_ms: bool) -> Path:
+    """Return the expected local zip path for a dataset spec."""
+    if use_ms:
+        return cache / Path(spec.ms_file).name
+    return cache / spec.zip_name
+
+
+def acquire_zip(spec: DatasetSpec, cache: Path, use_ms: bool) -> Path:
+    """Download zip file if needed and return its local path."""
+    if use_ms:
+        return download_from_modelscope(spec.ms_repo, spec.ms_file, cache)
+    zip_path = cache / spec.zip_name
+    download_with_resume(spec.url, zip_path)
+    return zip_path
+
+
+def flatten_nested_directory(extract_dir: Path, zip_path: Path) -> None:
+    nested_dir = extract_dir / zip_path.stem
     if not nested_dir.is_dir():
         return
-
     for item in nested_dir.iterdir():
         target = extract_dir / item.name
         if target.exists():
@@ -75,24 +150,39 @@ def flatten_nested_directory(extract_dir: Path, output_path: Path) -> None:
             else:
                 target.unlink()
         shutil.move(str(item), str(target))
-
     try:
         nested_dir.rmdir()
     except OSError:
         pass
 
 
-def download_and_extract(url: str, zip_path: Path, extract_dir: Path) -> None:
-    if extract_dir.is_dir():
-        print(f"Directory {extract_dir} already exists. Skipping download and extraction.")
-        return
-
-    download_with_resume(url, zip_path)
+def extract_zip(zip_path: Path, extract_dir: Path) -> None:
+    """Extract zip and flatten top-level nested directory if present."""
     extract_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
-
     flatten_nested_directory(extract_dir, zip_path)
+
+
+def process_dataset(spec: DatasetSpec, output: Path, cache: Path, use_ms: bool) -> None:
+    """Download and extract a dataset, skipping if already present."""
+    extract_dir = output / spec.extract_dir
+    if extract_dir.is_dir():
+        print(f"Directory {extract_dir} already exists. Skipping download and extraction.")
+        return
+    extract_zip(acquire_zip(spec, cache, use_ms), extract_dir)
+
+
+def _merge_points_into_sample(sample_dir: Path, cache: Path) -> None:
+    """Download Points.zip, copy stl files into dtu-sample, then clean up."""
+    points_dir = cache / _POINTS_SPEC.extract_dir
+    extract_zip(acquire_zip(_POINTS_SPEC, cache, use_ms=False), points_dir)
+    source_stl = points_dir / "Points" / "stl"
+    target_stl = sample_dir / "SampleSet" / "MVS Data" / "Points" / "stl"
+    target_stl.mkdir(parents=True, exist_ok=True)
+    for item in source_stl.iterdir():
+        shutil.copy2(item, target_stl / item.name)
+    shutil.rmtree(points_dir, ignore_errors=True)
 
 
 def main() -> int:
@@ -101,44 +191,24 @@ def main() -> int:
     cache = Path(args.cache) if args.cache else output
     cache.mkdir(parents=True, exist_ok=True)
 
-    download_and_extract(
-        "https://www.kaggle.com/api/v1/datasets/download/chenxiex/dtu-test-1200",
-        cache / "dtu-test-1200.zip",
-        output / "dtu-test-1200",
-    )
+    *regular_specs, sample_spec = DATASETS
+    for spec in regular_specs:
+        process_dataset(spec, output, cache, use_ms=args.ms)
 
-    download_and_extract(
-        "https://virutalbuy-public.oss-cn-hangzhou.aliyuncs.com/share/cascade-stereo/CasMVSNet/dtu_data/dtu_train_hr/Depths_raw.zip",
-        cache / "dtu_depths_raw.zip",
-        output / "dtu_depths_raw",
-    )
+    # dtu-sample: non-MS mode requires merging a separate Points.zip into the sample dir
+    sample_dir = output / sample_spec.extract_dir
+    if sample_dir.is_dir():
+        print(f"Directory {sample_dir} already exists. Skipping download and extraction.")
+    else:
+        extract_zip(acquire_zip(sample_spec, cache, use_ms=args.ms), sample_dir)
+        if not args.ms:
+            _merge_points_into_sample(sample_dir, cache)
 
-    if not (output / "dtu_sample").is_dir():
-        download_and_extract(
-            "http://roboimagedata2.compute.dtu.dk/data/MVS/SampleSet.zip",
-            cache / "dtu_sample.zip",
-            output / "dtu_sample",
-        )
-
-        points_extract_dir = cache / "dtu_points"
-        download_and_extract(
-            "http://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip",
-            cache / "dtu_points.zip",
-            points_extract_dir,
-        )
-
-        source_stl_dir = points_extract_dir / "Points" / "stl"
-        target_stl_dir = output / "dtu_sample" / "SampleSet" / "MVS Data" / "Points" / "stl"
-        target_stl_dir.mkdir(parents=True, exist_ok=True)
-        for item in source_stl_dir.iterdir():
-            shutil.copy2(item, target_stl_dir / item.name)
-
-        shutil.rmtree(points_extract_dir, ignore_errors=True)
-
-    for zip_name in ["dtu-test-1200.zip", "dtu_depths_raw.zip", "dtu_sample.zip", "dtu_points.zip"]:
-        zip_file = cache / zip_name
-        if zip_file.exists():
-            zip_file.unlink()
+    # Cleanup zip files from cache
+    for spec in DATASETS:
+        get_zip_path(spec, cache, args.ms).unlink(missing_ok=True)
+    if not args.ms:
+        (cache / _POINTS_SPEC.zip_name).unlink(missing_ok=True)
 
     return 0
 
