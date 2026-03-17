@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -9,9 +10,9 @@ import torch
 from vggt.models.vggt import VGGT
 
 
-VGGT_ENABLE_CUDA_MEM_STATS_ENV = "VGGT_ENABLE_CUDA_MEM_STATS"
-VGGT_CUDA_MEM_STATS_FILE_ENV = "VGGT_CUDA_MEM_STATS_FILE"
-VGGT_CUDA_MEM_STATS_LEVEL_ENV = "VGGT_CUDA_MEM_STATS_LEVEL"
+VGGT_ENABLE_PROFILER_ENV = "VGGT_ENABLE_PROFILER"
+VGGT_PROFILER_OUTPUT_DIR_ENV = "VGGT_PROFILER_OUTPUT_DIR"
+VGGT_PROFILER_REPORT_LEVEL_ENV = "VGGT_PROFILER_REPORT_LEVEL"
 
 _REPORT_LEVEL_ALIASES = {
     "0": "quiet",
@@ -51,6 +52,12 @@ def _format_mib(value_mib: Optional[float]) -> str:
     return f"{value_mib:.2f} MiB"
 
 
+def _format_ms(value_ms: Optional[float]) -> str:
+    if value_ms is None:
+        return "n/a"
+    return f"{value_ms:.2f} ms"
+
+
 def _shorten_timeline_label(label: str) -> str:
     label = label.replace("aggregator.frame_blocks.", "fb")
     label = label.replace("aggregator.global_blocks.", "gb")
@@ -88,16 +95,23 @@ def _cuda_peak_memory(device: torch.device) -> Dict[str, Any]:
 
 class PredictionMemoryProfiler:
     def __init__(self, model: VGGT, device: torch.device, dtype: torch.dtype):
-        self.enabled = _env_flag(VGGT_ENABLE_CUDA_MEM_STATS_ENV)
-        self.output_path = os.environ.get(VGGT_CUDA_MEM_STATS_FILE_ENV)
-        self.report_level = _env_report_level(VGGT_CUDA_MEM_STATS_LEVEL_ENV)
+        self.enabled = _env_flag(VGGT_ENABLE_PROFILER_ENV)
+        self.output_dir = os.environ.get(VGGT_PROFILER_OUTPUT_DIR_ENV)
+        self.report_level = _env_report_level(VGGT_PROFILER_REPORT_LEVEL_ENV)
         self.active = self.enabled and torch.cuda.is_available() and device.type == "cuda"
+        if self.output_dir:
+            self._resolved_output_dir_path = Path(self.output_dir)
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._resolved_output_dir_path = Path.cwd() / f"vggt_profiler_{timestamp}"
         self._model = model
         self._device = device
         self._dtype = dtype
         self._handles: List[Any] = []
+        self._started_at = perf_counter()
         self._observed_allocated_values: List[int] = []
         self._observed_reserved_values: List[int] = []
+        self._snapshot_marks: List[Tuple[str, float]] = []
         self._timeline: List[Dict[str, Any]] = []
         self.stats: Dict[str, Any] = {
             "enabled": self.enabled,
@@ -106,15 +120,22 @@ class PredictionMemoryProfiler:
             "device": str(device),
             "autocast_dtype": str(dtype),
             "env": {
-                "enable": VGGT_ENABLE_CUDA_MEM_STATS_ENV,
-                "output_file": VGGT_CUDA_MEM_STATS_FILE_ENV,
-                "report_level": VGGT_CUDA_MEM_STATS_LEVEL_ENV,
-                "output_path": self.output_path,
+                "enable": VGGT_ENABLE_PROFILER_ENV,
+                "output_dir": VGGT_PROFILER_OUTPUT_DIR_ENV,
+                "report_level": VGGT_PROFILER_REPORT_LEVEL_ENV,
+                "resolved_output_dir": str(self._resolved_output_dir_path),
                 "resolved_report_level": self.report_level,
             },
             "reason": None if self.active else self._inactive_reason(),
             "model": self._model_metadata(model),
             "inputs": {},
+            "timings": {
+                "total_elapsed_ms": None,
+                "snapshot_durations_ms": {},
+                "model_forward_elapsed_ms": None,
+                "module_total_elapsed_ms": None,
+                "slowest_module": None,
+            },
             "snapshots": {},
             "modules": {},
             "overall_peak": None,
@@ -158,11 +179,13 @@ class PredictionMemoryProfiler:
     def _record_timeline_entry(self, label: str, memory: Dict[str, Any]) -> None:
         if not self.active:
             return
+        now = perf_counter()
         self._timeline.append({
             "seq": len(self._timeline),
             "label": label,
             "allocated_mib": memory["allocated_mib"],
             "reserved_mib": memory["reserved_mib"],
+            "elapsed_ms_from_start": round((now - self._started_at) * 1000.0, 4),
         })
 
     def record_snapshot(self, label: str) -> None:
@@ -170,8 +193,11 @@ class PredictionMemoryProfiler:
             return
 
         self._synchronize()
+        now = perf_counter()
         snapshot = _cuda_current_memory(self._device)
+        snapshot["elapsed_ms_from_start"] = round((now - self._started_at) * 1000.0, 4)
         self.stats["snapshots"][label] = snapshot
+        self._snapshot_marks.append((label, now))
         self._remember_current_memory(snapshot)
         self._record_timeline_entry(label, snapshot)
 
@@ -204,12 +230,18 @@ class PredictionMemoryProfiler:
                 "peak_delta_allocated_mib": None,
                 "peak_delta_reserved_bytes": None,
                 "peak_delta_reserved_mib": None,
+                "total_elapsed_ms": 0.0,
+                "avg_elapsed_ms": None,
+                "max_elapsed_ms": None,
+                "last_elapsed_ms": None,
+                "_call_start_perf_counter_s": None,
             },
         )
 
         def pre_hook(_module, _inputs):
             self._synchronize()
             before = _cuda_current_memory(self._device)
+            module_stats["_call_start_perf_counter_s"] = perf_counter()
             module_stats["calls"] += 1
             module_stats["before"] = before
             self._remember_current_memory(before)
@@ -218,9 +250,14 @@ class PredictionMemoryProfiler:
 
         def post_hook(_module, _inputs, _output):
             self._synchronize()
+            end = perf_counter()
             after = _cuda_current_memory(self._device)
             peak = _cuda_peak_memory(self._device)
             before = module_stats["before"]
+            start = module_stats.get("_call_start_perf_counter_s")
+            elapsed_ms = None
+            if isinstance(start, float):
+                elapsed_ms = max(0.0, (end - start) * 1000.0)
 
             module_stats["after"] = after
             module_stats["peak"] = peak
@@ -228,6 +265,12 @@ class PredictionMemoryProfiler:
             module_stats["peak_delta_allocated_mib"] = _bytes_to_mib(module_stats["peak_delta_allocated_bytes"])
             module_stats["peak_delta_reserved_bytes"] = max(0, peak["peak_reserved_bytes"] - before["reserved_bytes"])
             module_stats["peak_delta_reserved_mib"] = _bytes_to_mib(module_stats["peak_delta_reserved_bytes"])
+            module_stats["last_elapsed_ms"] = elapsed_ms
+            if elapsed_ms is not None:
+                module_stats["total_elapsed_ms"] += elapsed_ms
+                module_stats["avg_elapsed_ms"] = module_stats["total_elapsed_ms"] / max(module_stats["calls"], 1)
+                if module_stats["max_elapsed_ms"] is None or elapsed_ms > module_stats["max_elapsed_ms"]:
+                    module_stats["max_elapsed_ms"] = elapsed_ms
 
             self._remember_current_memory(after)
             self._remember_peak_memory(peak)
@@ -298,12 +341,12 @@ class PredictionMemoryProfiler:
         return groups
 
     def _build_summary_lines(self) -> List[str]:
-        lines = ["=== VGGT CUDA Memory Profile ==="]
+        lines = ["=== VGGT CUDA Compute Profile ==="]
         lines.append(f"status: {'active' if self.active else 'inactive'}")
         lines.append(f"report level: {self.report_level}")
 
         if not self.enabled:
-            lines.append(f"profiling disabled by env {VGGT_ENABLE_CUDA_MEM_STATS_ENV}")
+            lines.append(f"profiling disabled by env {VGGT_ENABLE_PROFILER_ENV}")
             return lines
 
         if not self.active:
@@ -313,6 +356,7 @@ class PredictionMemoryProfiler:
         model_stats = self.stats["model"]
         input_stats = self.stats["inputs"]
         overall_peak = self.stats["overall_peak"] or {}
+        timings = self.stats["timings"]
 
         lines.append(f"device: {self.stats['device']} | autocast: {self.stats['autocast_dtype']}")
         lines.append(
@@ -337,11 +381,33 @@ class PredictionMemoryProfiler:
                 f"reserved={_format_mib(overall_peak['observed_peak_reserved_mib'])}"
             )
 
+        lines.append(
+            "timing: "
+            f"total={_format_ms(timings['total_elapsed_ms'])}, "
+            f"model_forward={_format_ms(timings['model_forward_elapsed_ms'])}, "
+            f"module_sum={_format_ms(timings['module_total_elapsed_ms'])}"
+        )
+
+        if timings["slowest_module"]:
+            slowest = timings["slowest_module"]
+            lines.append(
+                "slowest module: "
+                f"{slowest['name']} (avg={_format_ms(slowest['avg_elapsed_ms'])}, max={_format_ms(slowest['max_elapsed_ms'])})"
+            )
+
         lines.append("snapshots:")
         for label, snapshot in self._selected_snapshots():
             lines.append(
-                f"  - {label}: allocated={_format_mib(snapshot['allocated_mib'])}, reserved={_format_mib(snapshot['reserved_mib'])}"
+                "  - "
+                f"{label}: allocated={_format_mib(snapshot['allocated_mib'])}, "
+                f"reserved={_format_mib(snapshot['reserved_mib'])}, "
+                f"elapsed={_format_ms(snapshot.get('elapsed_ms_from_start'))}"
             )
+
+        if timings["snapshot_durations_ms"]:
+            lines.append("snapshot durations:")
+            for edge, elapsed_ms in timings["snapshot_durations_ms"].items():
+                lines.append(f"  - {edge}: {_format_ms(elapsed_ms)}")
 
         if self.stats["error"]:
             lines.append(
@@ -371,6 +437,8 @@ class PredictionMemoryProfiler:
                     f"{module_stats['name']}: "
                     f"delta_allocated={_format_mib(module_stats['peak_delta_allocated_mib'])}, "
                     f"delta_reserved={_format_mib(module_stats['peak_delta_reserved_mib'])}, "
+                    f"avg_time={_format_ms(module_stats['avg_elapsed_ms'])}, "
+                    f"max_time={_format_ms(module_stats['max_elapsed_ms'])}, "
                     f"calls={module_stats['calls']}"
                 )
         return lines
@@ -381,11 +449,14 @@ class PredictionMemoryProfiler:
             lines.extend(self._build_detailed_lines())
         return lines
 
-    def _default_artifact_stem(self) -> Path:
-        if self.output_path:
-            return Path(self.output_path).with_suffix("")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return Path.cwd() / f"vggt_cuda_mem_stats_{timestamp}"
+    def _output_dir_path(self) -> Path:
+        return self._resolved_output_dir_path
+
+    def _json_output_path(self) -> Path:
+        return self._output_dir_path() / "profile.json"
+
+    def _chart_output_path(self) -> Path:
+        return self._output_dir_path() / "profile_chart.png"
 
     def _render_plot(self) -> Optional[Path]:
         if not self.active:
@@ -406,11 +477,10 @@ class PredictionMemoryProfiler:
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
-            artifact_stem = self._default_artifact_stem()
-            chart_path = artifact_stem.with_name(artifact_stem.name + "_chart").with_suffix(".png")
+            chart_path = self._chart_output_path()
             chart_path.parent.mkdir(parents=True, exist_ok=True)
 
-            figure, axes = plt.subplots(3, 1, figsize=(14, 16), constrained_layout=True)
+            figure, axes = plt.subplots(4, 1, figsize=(14, 20), constrained_layout=True)
 
             if snapshots:
                 snapshot_labels = [label for label, _snapshot in snapshots]
@@ -456,6 +526,22 @@ class PredictionMemoryProfiler:
             else:
                 axes[2].set_axis_off()
 
+            module_times = [
+                module_stats
+                for module_stats in self.stats["modules"].values()
+                if module_stats["avg_elapsed_ms"] is not None
+            ]
+            if module_times:
+                module_times.sort(key=lambda item: item["avg_elapsed_ms"], reverse=True)
+                labels = [module_stats["name"] for module_stats in module_times]
+                values = [module_stats["avg_elapsed_ms"] for module_stats in module_times]
+                axes[3].bar(labels, values)
+                axes[3].set_title("Module Average Forward Time")
+                axes[3].set_ylabel("ms")
+                axes[3].tick_params(axis="x", rotation=75)
+            else:
+                axes[3].set_axis_off()
+
             figure.savefig(chart_path, dpi=150)
             plt.close(figure)
             return chart_path
@@ -474,15 +560,47 @@ class PredictionMemoryProfiler:
         print("\n".join(lines), flush=True)
 
         if self.report_level == "plot":
-            chart_path = self._render_plot()
-            if chart_path is not None:
-                self.stats["artifacts"]["chart"] = str(chart_path)
+            chart_path = self.stats["artifacts"].get("chart")
+            if chart_path:
                 print(f"chart: {chart_path}", flush=True)
             elif self.stats["artifacts"].get("chart_error"):
                 chart_error = self.stats["artifacts"]["chart_error"]
                 print(f"chart error: {chart_error['type']}: {chart_error['message']}", flush=True)
 
     def finalize(self) -> Dict[str, Any]:
+        ended_at = perf_counter()
+        self.stats["timings"]["total_elapsed_ms"] = round((ended_at - self._started_at) * 1000.0, 4)
+
+        if self._snapshot_marks:
+            snapshot_durations: Dict[str, float] = {}
+            for (prev_label, prev_t), (cur_label, cur_t) in zip(self._snapshot_marks[:-1], self._snapshot_marks[1:]):
+                snapshot_durations[f"{prev_label}->{cur_label}"] = round((cur_t - prev_t) * 1000.0, 4)
+            self.stats["timings"]["snapshot_durations_ms"] = snapshot_durations
+
+        snapshots = self.stats.get("snapshots", {})
+        before_forward = snapshots.get("before_model_forward", {}).get("elapsed_ms_from_start")
+        after_forward = snapshots.get("after_model_forward", {}).get("elapsed_ms_from_start")
+        if isinstance(before_forward, (float, int)) and isinstance(after_forward, (float, int)):
+            self.stats["timings"]["model_forward_elapsed_ms"] = round(max(0.0, after_forward - before_forward), 4)
+
+        module_total_elapsed_ms = 0.0
+        slowest_module: Optional[Dict[str, Any]] = None
+        for module_stats in self.stats["modules"].values():
+            module_stats.pop("_call_start_perf_counter_s", None)
+            elapsed = module_stats.get("total_elapsed_ms")
+            if isinstance(elapsed, (float, int)):
+                module_total_elapsed_ms += elapsed
+            if module_stats.get("avg_elapsed_ms") is not None:
+                if slowest_module is None or module_stats["avg_elapsed_ms"] > slowest_module["avg_elapsed_ms"]:
+                    slowest_module = {
+                        "name": module_stats["name"],
+                        "avg_elapsed_ms": round(module_stats["avg_elapsed_ms"], 4),
+                        "max_elapsed_ms": round(module_stats["max_elapsed_ms"], 4) if module_stats["max_elapsed_ms"] is not None else None,
+                    }
+
+        self.stats["timings"]["module_total_elapsed_ms"] = round(module_total_elapsed_ms, 4)
+        self.stats["timings"]["slowest_module"] = slowest_module
+
         if self.active:
             overall_allocated_bytes = max(self._observed_allocated_values, default=0)
             overall_reserved_bytes = max(self._observed_reserved_values, default=0)
@@ -494,15 +612,19 @@ class PredictionMemoryProfiler:
             }
             self.stats["timeline"] = self._timeline
 
+            chart_path = self._render_plot()
+            if chart_path is not None:
+                self.stats["artifacts"]["chart"] = str(chart_path)
+
         if self.enabled:
             self._emit_report()
 
-        if self.enabled and self.output_path:
+        if self.enabled:
             payload = json.dumps(self.stats, indent=2)
-            output_file = Path(self.output_path)
+            output_file = self._json_output_path()
             output_file.parent.mkdir(parents=True, exist_ok=True)
             output_file.write_text(payload, encoding="utf-8")
             if self.report_level != "quiet":
-                print(f"json: {self.output_path}", flush=True)
+                print(f"json: {output_file}", flush=True)
 
         return self.stats
