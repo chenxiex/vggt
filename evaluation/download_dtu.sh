@@ -4,12 +4,14 @@
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --output) output="$2"; shift ;;
+        --cache) cache="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
 done
 
 output="${output:-data}"
+cache="${cache:-${output}}"
 
 download_and_extract() 
 {
@@ -42,16 +44,18 @@ download_and_extract()
     fi
 }
 
+mkdir -p "${cache}"
+
 # https://github.com/JiayuYANG/CVP-MVSNet?tab=readme-ov-file#2-download-testing-dataset
-download_and_extract "https://www.kaggle.com/api/v1/datasets/download/chenxiex/dtu-test-1200" "${output}/dtu-test-1200.zip" "${output}/dtu-test-1200"
+download_and_extract "https://www.kaggle.com/api/v1/datasets/download/chenxiex/dtu-test-1200" "${cache}/dtu-test-1200.zip" "${output}/dtu-test-1200"
 
 # https://github.com/alibaba/cascade-stereo/blob/master/CasMVSNet/README.md#training
-download_and_extract "https://virutalbuy-public.oss-cn-hangzhou.aliyuncs.com/share/cascade-stereo/CasMVSNet/dtu_data/dtu_train_hr/Depths_raw.zip" "${output}/dtu_depths_raw.zip" "${output}/dtu_depths_raw"
+download_and_extract "https://virutalbuy-public.oss-cn-hangzhou.aliyuncs.com/share/cascade-stereo/CasMVSNet/dtu_data/dtu_train_hr/Depths_raw.zip" "${cache}/dtu_depths_raw.zip" "${output}/dtu_depths_raw"
 
 # https://roboimagedata.compute.dtu.dk/?page_id=36
-download_and_extract "http://roboimagedata2.compute.dtu.dk/data/MVS/SampleSet.zip" "${output}/dtu_sample.zip" "${output}/dtu_sample"
-download_and_extract "http://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip" "${output}/dtu_points.zip" "${output}/dtu_points"
-cp -r "${output}/dtu_points/Points/stl/"* "${output}/dtu_sample/SampleSet/MVS Data/Points/stl/"
-rm -r "${output}/dtu_points"
+download_and_extract "http://roboimagedata2.compute.dtu.dk/data/MVS/SampleSet.zip" "${cache}/dtu_sample.zip" "${output}/dtu_sample"
+download_and_extract "http://roboimagedata2.compute.dtu.dk/data/MVS/Points.zip" "${cache}/dtu_points.zip" "${cache}/dtu_points"
+cp -r "${cache}/dtu_points/Points/stl/"* "${output}/dtu_sample/SampleSet/MVS Data/Points/stl/"
+rm -r "${cache}/dtu_points"
 
-rm "${output}/dtu-test-1200.zip" "${output}/dtu_depths_raw.zip" "${output}/dtu_sample.zip" "${output}/dtu_points.zip"
+rm "${cache}/dtu-test-1200.zip" "${cache}/dtu_depths_raw.zip" "${cache}/dtu_sample.zip" "${cache}/dtu_points.zip"
