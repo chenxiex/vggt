@@ -26,6 +26,14 @@ demo = [
     "trimesh",
     "matplotlib",
 ]
+evaluation = [
+    "torch",
+    "tqdm",
+    "open3d",
+    "scipy",
+    "scikit-learn",
+    "plyfile"
+]
 
 # Using setuptools as the build backend
 [build-system]
