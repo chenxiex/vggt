@@ -126,7 +126,7 @@ You can use the provided `download_dtu.py` script to download all the needed dat
 python download_dtu.py --output "${DATASETS_PATH}" --cache "${CACHE_PATH}"
 ```
 
-All datasets will be downloaded to `${DATASETS_PATH}`, and what downloaded to `${CACHE_PATH}` will be automatically cleaned when finished.
+`curl` is needed for this script. All datasets will be downloaded to `${DATASETS_PATH}`, and what downloaded to `${CACHE_PATH}` will be automatically cleaned when finished.
 
 ### Running the Evaluation
 
