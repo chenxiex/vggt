@@ -28,6 +28,7 @@ demo = [
 ]
 evaluation = [
     "torch",
+    "torchvision",
     "tqdm",
     "open3d",
     "scipy",
