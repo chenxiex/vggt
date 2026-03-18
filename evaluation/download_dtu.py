@@ -159,9 +159,11 @@ def flatten_nested_directory(extract_dir: Path, zip_path: Path) -> None:
 def extract_zip(zip_path: Path, extract_dir: Path) -> None:
     """Extract zip and flatten top-level nested directory if present."""
     extract_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Extracting {zip_path.name}...")
     with ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
     flatten_nested_directory(extract_dir, zip_path)
+    print(f"Extraction complete: {extract_dir}")
 
 
 def process_dataset(spec: DatasetSpec, output: Path, cache: Path, use_ms: bool) -> None:
@@ -170,19 +172,28 @@ def process_dataset(spec: DatasetSpec, output: Path, cache: Path, use_ms: bool) 
     if extract_dir.is_dir():
         print(f"Directory {extract_dir} already exists. Skipping download and extraction.")
         return
-    extract_zip(acquire_zip(spec, cache, use_ms), extract_dir)
+    zip_path = acquire_zip(spec, cache, use_ms)
+    extract_zip(zip_path, extract_dir)
+    print(f"Deleting {zip_path.name}...")
+    zip_path.unlink(missing_ok=True)
+    print(f"Dataset {spec.extract_dir} processing complete.")
 
 
 def _merge_points_into_sample(sample_dir: Path, cache: Path) -> None:
     """Download Points.zip, copy stl files into dtu-sample, then clean up."""
     points_dir = cache / _POINTS_SPEC.extract_dir
-    extract_zip(acquire_zip(_POINTS_SPEC, cache, use_ms=False), points_dir)
+    points_zip = acquire_zip(_POINTS_SPEC, cache, use_ms=False)
+    extract_zip(points_zip, points_dir)
+    print(f"Merging Points data into sample directory...")
     source_stl = points_dir / "Points" / "stl"
     target_stl = sample_dir / "SampleSet" / "MVS Data" / "Points" / "stl"
     target_stl.mkdir(parents=True, exist_ok=True)
     for item in source_stl.iterdir():
         shutil.copy2(item, target_stl / item.name)
     shutil.rmtree(points_dir, ignore_errors=True)
+    print(f"Deleting {points_zip.name}...")
+    points_zip.unlink(missing_ok=True)
+    print(f"Points merge complete.")
 
 
 def main() -> int:
@@ -200,16 +211,14 @@ def main() -> int:
     if sample_dir.is_dir():
         print(f"Directory {sample_dir} already exists. Skipping download and extraction.")
     else:
-        extract_zip(acquire_zip(sample_spec, cache, use_ms=args.ms), sample_dir)
+        sample_zip = acquire_zip(sample_spec, cache, use_ms=args.ms)
+        extract_zip(sample_zip, sample_dir)
+        print(f"Deleting {sample_zip.name}...")
+        sample_zip.unlink(missing_ok=True)
         if not args.ms:
             _merge_points_into_sample(sample_dir, cache)
 
-    # Cleanup zip files from cache
-    for spec in DATASETS:
-        get_zip_path(spec, cache, args.ms).unlink(missing_ok=True)
-    if not args.ms:
-        (cache / _POINTS_SPEC.zip_name).unlink(missing_ok=True)
-
+    print("All datasets processed successfully!")
     return 0
 
 
