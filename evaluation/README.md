@@ -140,7 +140,7 @@ python test_dtu.py \
   --model_path "${CKPT_FILE_PATH}" \
 ```
 
-CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/XXX.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation [DTUeval-python](https://github.com/jzhangbs/DTUeval-python). You can use it like this:
+CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/XXX.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation [DTUeval-python](https://github.com/chenxiex/DTUeval-python). You can use it like this:
 
 ```bash
 cd DTUeval-python
