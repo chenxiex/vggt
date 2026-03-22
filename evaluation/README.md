@@ -140,11 +140,9 @@ python test_dtu.py \
   --model_path "${CKPT_FILE_PATH}" \
 ```
 
-CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/vggtXXX_l3.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation `Fast-DTU-Evaluation`, which is faster but the score may differ slightly. You can use it like this:
+CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/XXX.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation [DTUeval-python](https://github.com/jzhangbs/DTUeval-python). You can use it like this:
 
 ```bash
-cd Fast-DTU-Evaluation/chamfer3D
-python setup.py install
-cd ../
-python eval_dtu.py --method vggt --pred_dir "${RESULTS_PATH}" --gt_dir "${DATASETS_PATH}/dtu-sample/SampleSet/MVS Data" --save --num_workers 1
+cd DTUeval-python
+python eval.py --scans true --dataset_dir "${DATASETS_PATH}/dtu-sample/SampleSet/MVS Data/" --input_dir "${RESULTS_PATH}" --mode pcd --vis_out_dir "${out_dir_for_visualization}" --result_file "${result_file_for_score}"
 ```
