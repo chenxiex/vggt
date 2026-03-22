@@ -48,14 +48,16 @@ class Attention(nn.Module):
         self.rope = rope
 
     def forward(self, x: Tensor, pos=None) -> Tensor:
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
+        B, N, C = x.shape # Batch Size，tokens 数量和特征维度
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4) # reshape 将 qkv 的 3*dim 输出分成 3 个部分 q, k 和 v，每个部分再分成不同的注意力头。permute 交换维度，最后变成 (qkv, batch size, num_heads, seq_len, head_dim)
+        # 这里将 qkv 合并计算，在数学上是等价的，且效率可能更高。
+        q, k, v = qkv.unbind(0) # 这里将第一个维度 qkv 解绑定，从而拆开成 q, k, v三个向量
         q, k = self.q_norm(q), self.k_norm(k)
 
         if self.rope is not None:
             q = self.rope(q, pos)
             k = self.rope(k, pos)
+        # 在 q 和 k 后面进行 RoPE。
 
         if self.fused_attn:
             x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p if self.training else 0.0)
@@ -65,10 +67,12 @@ class Attention(nn.Module):
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
+            # 经典的注意力计算
 
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+        # 多头合并
         return x
 
 

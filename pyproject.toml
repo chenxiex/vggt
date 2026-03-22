@@ -27,10 +27,13 @@ demo = [
     "matplotlib",
 ]
 evaluation = [
+    "lightglue @ git+https://gh-proxy.org/https://github.com/cvg/LightGlue.git",
+    "open3d>=0.19.0",
+    "pyceres==2.3",
+    "pycolmap==3.10.0",
     "torch",
     "torchvision",
     "tqdm",
-    "open3d",
     "scipy",
     "scikit-learn",
     "plyfile"
@@ -59,3 +62,8 @@ default = { solve-group = "default" }
 demo = { features = ["demo"], solve-group = "default" }
 
 [tool.pixi.tasks]
+
+# UV configuration
+[tool.uv.sources]
+lightglue = { git = "https://gh-proxy.org/https://github.com/cvg/LightGlue.git" }
+

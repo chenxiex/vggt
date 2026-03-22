@@ -61,14 +61,14 @@ class Block(nn.Module):
             rope=rope,
         )
 
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity() # LayerScale 是一个可学习的系数，在残差连接之前和层的输出相乘，从而缩放层的输出，调整残差连接的贡献
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = ffn_layer(
             in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop, bias=ffn_bias
-        )
+        ) # feed-forward 层，Mlp 类中用的是 fc1+GELU+fc2 的设计
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
@@ -77,12 +77,15 @@ class Block(nn.Module):
     def forward(self, x: Tensor, pos=None) -> Tensor:
         def attn_residual_func(x: Tensor, pos=None) -> Tensor:
             return self.ls1(self.attn(self.norm1(x), pos=pos))
+            # 直接链式地把这一堆层都堆在这里了。。。
 
         def ffn_residual_func(x: Tensor) -> Tensor:
             return self.ls2(self.mlp(self.norm2(x)))
+            # 这边也是。
 
         if self.training and self.sample_drop_ratio > 0.1:
             # the overhead is compensated only for a drop path rate larger than 0.1
+            # 某种高效的残差连接计算方法
             x = drop_add_residual_stochastic_depth(
                 x, pos=pos, residual_func=attn_residual_func, sample_drop_ratio=self.sample_drop_ratio
             )
@@ -95,6 +98,7 @@ class Block(nn.Module):
         else:
             x = x + attn_residual_func(x, pos=pos)
             x = x + ffn_residual_func(x)
+            # 这里将每个残差连接的结果都加到输入上，先 attention, 然后 feed-forward
         return x
 
 

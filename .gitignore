@@ -143,7 +143,12 @@ dmypy.json
 **/tmp/
 **/outputs/skyseg.onnx
 skyseg.onnx
+data/
 
 # pixi environments
 .pixi
 *.egg-info
+
+# gradio
+.gradio/
+input_images_*/

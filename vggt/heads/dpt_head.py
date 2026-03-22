@@ -69,6 +69,7 @@ class DPTHead(nn.Module):
         self.projects = nn.ModuleList(
             [nn.Conv2d(in_channels=dim_in, out_channels=oc, kernel_size=1, stride=1, padding=0) for oc in out_channels]
         )
+        # 对于每张特征图，首先用一个卷积层将特征维度从 dim_in 转换为 out_channels[i]。
 
         # Resize layers for upsampling feature maps.
         self.resize_layers = nn.ModuleList(
@@ -87,6 +88,7 @@ class DPTHead(nn.Module):
         )
 
         self.scratch = _make_scratch(out_channels, features, expand=False)
+        # _make_scratch 里面包含了四个卷积层，分别用于将某个输入特征图的通道数转换为 features。
 
         # Attach additional modules to scratch.
         self.scratch.stem_transpose = None
@@ -203,22 +205,22 @@ class DPTHead(nn.Module):
         dpt_idx = 0
 
         for layer_idx in self.intermediate_layer_idx:
-            x = aggregated_tokens_list[layer_idx][:, :, patch_start_idx:]
+            x = aggregated_tokens_list[layer_idx][:, :, patch_start_idx:] # [batch size, seq_len, num_patches, embed_dim]
 
             # Select frames if processing a chunk
             if frames_start_idx is not None and frames_end_idx is not None:
                 x = x[:, frames_start_idx:frames_end_idx]
 
-            x = x.reshape(B * S, -1, x.shape[-1])
+            x = x.reshape(B * S, -1, x.shape[-1]) # [batch size * seq_len, num_patches, embed_dim]
 
             x = self.norm(x)
 
-            x = x.permute(0, 2, 1).reshape((x.shape[0], x.shape[-1], patch_h, patch_w))
+            x = x.permute(0, 2, 1).reshape((x.shape[0], x.shape[-1], patch_h, patch_w)) # [batch size * seq_len, embed_dim, patch_h, patch_w]
 
-            x = self.projects[dpt_idx](x)
+            x = self.projects[dpt_idx](x) # 利用卷积层将特征维度从 dim_in 转换为 out_channels[i]
             if self.pos_embed:
-                x = self._apply_pos_embed(x, W, H)
-            x = self.resize_layers[dpt_idx](x)
+                x = self._apply_pos_embed(x, W, H) # 一个比较简单的二维位置编码
+            x = self.resize_layers[dpt_idx](x) # 上采样
 
             out.append(x)
             dpt_idx += 1
@@ -234,12 +236,12 @@ class DPTHead(nn.Module):
         )
 
         if self.pos_embed:
-            out = self._apply_pos_embed(out, W, H)
+            out = self._apply_pos_embed(out, W, H) # 再次应用位置编码
 
         if self.feature_only:
             return out.view(B, S, *out.shape[1:])
 
-        out = self.scratch.output_conv2(out)
+        out = self.scratch.output_conv2(out) # 双层卷积层，输出特征图的通道数为 output_dim
         preds, conf = activate_head(out, activation=self.activation, conf_activation=self.conf_activation)
 
         preds = preds.view(B, S, *preds.shape[1:])
@@ -286,6 +288,7 @@ class DPTHead(nn.Module):
 
         out = self.scratch.refinenet1(out, layer_1_rn)
         del layer_1_rn, layer_1
+        # refinenet: 1. 通过残差卷积提取特征 2. 将第二个参数提取出的特征与第一个参数的特征相加 3. 插值到 size 4. 最后再 1x1 卷积，转换特征维度
 
         out = self.scratch.output_conv1(out)
         return out
