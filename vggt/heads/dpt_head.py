@@ -205,7 +205,13 @@ class DPTHead(nn.Module):
         dpt_idx = 0
 
         for layer_idx in self.intermediate_layer_idx:
-            x = aggregated_tokens_list[layer_idx][:, :, patch_start_idx:] # [batch size, seq_len, num_patches, embed_dim]
+            layer_tokens = aggregated_tokens_list[layer_idx]
+            if layer_tokens is None:
+                raise ValueError(
+                    f"Missing aggregator layer {layer_idx}. "
+                    "Please include this layer in Aggregator.retained_layer_idx."
+                )
+            x = layer_tokens[:, :, patch_start_idx:] # [batch size, seq_len, num_patches, embed_dim]
 
             # Select frames if processing a chunk
             if frames_start_idx is not None and frames_end_idx is not None:

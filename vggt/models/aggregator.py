@@ -65,6 +65,7 @@ class Aggregator(nn.Module):
         patch_embed="dinov2_vitl14_reg",
         aa_order=["frame", "global"],
         aa_block_size=1,
+        retained_layer_idx: Optional[List[int]] = None,
         qk_norm=True,
         rope_freq=100,
         init_values=0.01,
@@ -116,6 +117,13 @@ class Aggregator(nn.Module):
         self.aa_order = aa_order
         self.patch_size = patch_size
         self.aa_block_size = aa_block_size
+        # Keep only layers required by downstream heads by default.
+        if retained_layer_idx is None:
+            retained_layer_idx = [4, 11, 17, 23]
+        retained_layer_set = {idx for idx in retained_layer_idx if 0 <= idx < depth}
+        retained_layer_set.add(depth - 1)
+        self.retained_layer_idx = sorted(retained_layer_set)
+        self._retained_layer_idx_set = set(self.retained_layer_idx)
 
         # Validate that depth is divisible by aa_block_size
         if self.depth % self.aa_block_size != 0:
@@ -183,15 +191,16 @@ class Aggregator(nn.Module):
             if hasattr(self.patch_embed, "mask_token"):
                 self.patch_embed.mask_token.requires_grad_(False)
 
-    def forward(self, images: torch.Tensor) -> Tuple[List[torch.Tensor], int]:
+    def forward(self, images: torch.Tensor) -> Tuple[List[Optional[torch.Tensor]], int]:
         """
         Args:
             images (torch.Tensor): Input images with shape [B, S, 3, H, W], in range [0, 1].
                 B: batch size, S: sequence length, 3: RGB channels, H: height, W: width
 
         Returns:
-            (list[torch.Tensor], int):
-                The list of outputs from the attention blocks,
+            (list[Optional[torch.Tensor]], int):
+                A sparse list of outputs from the attention blocks with length=depth.
+                Non-retained layer positions contain None.
                 and the patch_start_idx indicating where patch tokens begin.
         """
         B, S, C_in, H, W = images.shape
@@ -235,7 +244,8 @@ class Aggregator(nn.Module):
 
         frame_idx = 0
         global_idx = 0
-        output_list = []
+        output_list: List[Optional[torch.Tensor]] = [None] * self.depth
+        output_idx = 0
 
         for _ in range(self.aa_block_num):
             for attn_type in self.aa_order:
@@ -253,7 +263,9 @@ class Aggregator(nn.Module):
             for i in range(len(frame_intermediates)):
                 # concat frame and global intermediates, [B x S x P x 2C]
                 concat_inter = torch.cat([frame_intermediates[i], global_intermediates[i]], dim=-1)
-                output_list.append(concat_inter)
+                if output_idx in self._retained_layer_idx_set:
+                    output_list[output_idx] = concat_inter
+                output_idx += 1
 
         del concat_inter
         del frame_intermediates
