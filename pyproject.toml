@@ -26,18 +26,14 @@ demo = [
     "trimesh",
     "matplotlib",
 ]
-runtime = [
-    "torch",
-    "torchvision",
-]
 evaluation = [
     "lightglue @ git+https://gh-proxy.org/https://github.com/cvg/LightGlue.git",
     "open3d>=0.19.0",
     "pyceres==2.3",
     "pycolmap==3.10.0",
     "torch",
+    "torchvision",
     "tqdm",
-    "open3d",
     "scipy",
     "scikit-learn",
     "plyfile"

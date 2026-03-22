@@ -253,6 +253,5 @@ if __name__ == "__main__":
         points = open3d_filter(depths, projs, rgbs,
                                dist_thresh=1.0, batch_size=20, num_consist=4)
         write_ply(args.results_path /
-                  f"vggt{int(scene_name[4:]):03d}_l3.ply", points)
-        logger.info(f"Finished processing {scene_name}, written to " +
-                    f"vggt{int(scene_name[4:]):03d}_l3.ply")
+                  f"{int(scene_name[4:]):03d}.ply", points)
+        logger.info(f"Finished processing {scene_name}, written to {int(scene_name[4:]):03d}.ply")

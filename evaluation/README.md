@@ -78,33 +78,6 @@ python test_co3d.py \
     --use_ba
 ```
 
-## Dense MVS Estimation on the DTU Dataset.
-
-### Dataset Preparation
-You can use the provided `download_dtu.py` script to download all the needed data:
-```bash
-python download_dtu.py --output "${DATASETS_PATH}" --cache "${CACHE_PATH}"
-```
-
-All datasets will be downloaded to `${DATASETS_PATH}`, and what downloaded to `${CACHE_PATH}` will be automatically cleaned when finished.
-
-### Running the Evaluation
-
-Currently no ba support. run the following:
-```bash
-python test_dtu.py \
-  --dtu_test_1200_path "${DATASETS_PATH}/dtu-test-1200" \
-  --dtu_depths_path "${DATASETS_PATH}/dtu-depths-raw" \
-  --results_path "${RESULTS_PATH}" \
-  --model_path "${CKPT_FILE_PATH}" \
-```
-CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/vggtXXX_l3.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation `Fast-DTU-Evaluation`, which is faster but the score may differ slightly. You can use it like this:
-```bash
-cd Fast-DTU-Evaluation/chamfer3D
-python setup.py install
-cd ../
-python eval_dtu.py --method vggt --pred_dir "${RESULTS_PATH}" --gt_dir "${DATASETS_PATH}/dtu-sample/SampleSet/MVS Data" --save --num_workers 1
-```
 
 
 
@@ -133,3 +106,43 @@ Use `--fast_eval` to test on a subset of data (max 10 sequences per category):
 - With Bundle Adjustment, you can expect a Mean AUC@30 between 90.5% and 92.5%
 
 > **Note:** For simplicity, this script did not optimize the inference speed, so timing results may differ from those reported in the paper. For example, when using ba, keypoint extractor models are re-initialized for each sequence rather than being loaded once.
+
+
+## Dense MVS Estimation on the DTU Dataset.
+
+### Setup
+
+Install the required dependencies:
+
+```bash
+pip install -e .[evaluation]
+```
+
+### Dataset Preparation
+
+You can use the provided `download_dtu.py` script to download all the needed data:
+
+```bash
+python download_dtu.py --output "${DATASETS_PATH}" --cache "${CACHE_PATH}"
+```
+
+`curl` is needed for this script. All datasets will be downloaded to `${DATASETS_PATH}`, and what downloaded to `${CACHE_PATH}` will be automatically cleaned when finished.
+
+### Running the Evaluation
+
+Currently no ba support. Run the following:
+
+```bash
+python test_dtu.py \
+  --dtu_test_1200_path "${DATASETS_PATH}/dtu-test-1200" \
+  --dtu_depths_path "${DATASETS_PATH}/dtu-depths-raw" \
+  --results_path "${RESULTS_PATH}" \
+  --model_path "${CKPT_FILE_PATH}" \
+```
+
+CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/XXX.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation [DTUeval-python](https://github.com/jzhangbs/DTUeval-python). You can use it like this:
+
+```bash
+cd DTUeval-python
+python eval.py --scans true --dataset_dir "${DATASETS_PATH}/dtu-sample/SampleSet/MVS Data/" --input_dir "${RESULTS_PATH}" --mode pcd --vis_out_dir "${out_dir_for_visualization}" --result_file "${result_file_for_score}"
+```

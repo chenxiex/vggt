@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import open3d as o3d
 from urllib.request import urlretrieve
 import os
+import logging
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
@@ -21,9 +22,11 @@ if torch.cuda.is_available():
 else:
     dtype = torch.float32
 
+logger = logging.getLogger(__name__)
 
 def load_model(model_path:Path) -> VGGT:
     if not model_path.exists():
+        logger.info(f"Model doesn't exists. Downloading from {MODEL_URL}...")
         model_path.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(MODEL_URL, model_path)
 
