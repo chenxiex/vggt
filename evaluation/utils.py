@@ -1,6 +1,6 @@
 from vggt.models.vggt import VGGT
 import torch
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from profiler import PredictionMemoryProfiler
 from vggt.utils.load_fn import load_and_preprocess_images
@@ -24,13 +24,13 @@ else:
 
 logger = logging.getLogger(__name__)
 
-def load_model(model_path:Path) -> VGGT:
+def load_model(model_path:Path, model_args: dict={}) -> VGGT:
     if not model_path.exists():
         logger.info(f"Model doesn't exists. Downloading from {MODEL_URL}...")
         model_path.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(MODEL_URL, model_path)
 
-    model = VGGT()
+    model = VGGT(**model_args)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     model = model.to(device)

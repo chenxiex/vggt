@@ -201,7 +201,7 @@ if __name__ == "__main__":
         logger.info(f"Processing {scene_name}...")
         if not args.no_pred:
             logger.info("Predicting depth maps...")
-            model = load_model(args.model_path)
+            model = load_model(args.model_path, model_args={"enable_point": False, "enable_track": False})
             images_path = args.dtu_test_1200_path/"Rectified"/scene_name
             sample_no = random.sample(range(0, 49), args.sample_size)
             sampled_image_paths = [
