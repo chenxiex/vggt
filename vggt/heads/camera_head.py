@@ -84,6 +84,8 @@ class CameraHead(nn.Module):
         """
         # Use tokens from the last block for camera prediction.
         tokens = aggregated_tokens_list[-1]
+        if tokens is None:
+            raise ValueError("The last aggregator layer output is missing. Please retain the final layer.")
 
         # Extract the camera tokens
         pose_tokens = tokens[:, :, 0]

@@ -59,7 +59,7 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         if query_points is not None and len(query_points.shape) == 2:
             query_points = query_points.unsqueeze(0)
 
-        aggregated_tokens_list, patch_start_idx = self.aggregator(images) # [depth, batch_size, seq_len, num_patches, embed_dim]，包含 embedding+alternating attention 两个步骤。frame attention 和 global attention 在 embed_dim 维度进行拼接
+        aggregated_tokens_list, patch_start_idx = self.aggregator(images) # 稀疏层列表: 长度=depth，未保留层为None；保留层张量形状为 [B, S, P, 2C]
 
         predictions = {}
 
