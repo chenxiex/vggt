@@ -1,6 +1,6 @@
 from vggt.models.vggt import VGGT
 import torch
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from profiler import PredictionMemoryProfiler
 from vggt.utils.load_fn import load_and_preprocess_images
