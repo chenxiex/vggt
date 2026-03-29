@@ -68,6 +68,9 @@ class Aggregator(nn.Module):
         qk_norm=True,
         rope_freq=100,
         init_values=0.01,
+
+        merging: Optional[list[int]] = list(range(24)),
+        merge_ratio=0.9,
     ):
         super().__init__()
 
@@ -142,6 +145,9 @@ class Aggregator(nn.Module):
 
         self.use_reentrant = False # hardcoded to False
 
+        self.merging = merging
+        self.merge_ratio = merge_ratio
+
     def __build_patch_embed__(
         self,
         patch_embed,
@@ -195,6 +201,8 @@ class Aggregator(nn.Module):
                 and the patch_start_idx indicating where patch tokens begin.
         """
         B, S, C_in, H, W = images.shape
+        patch_height = H // self.patch_size
+        patch_width = W // self.patch_size
 
         if C_in != 3:
             raise ValueError(f"Expected 3 input channels, got {C_in}")
@@ -220,7 +228,7 @@ class Aggregator(nn.Module):
 
         pos = None
         if self.rope is not None:
-            pos = self.position_getter(B * S, H // self.patch_size, W // self.patch_size, device=images.device)
+            pos = self.position_getter(B * S, patch_height, patch_width, device=images.device)
             # 生成一张表，(B*S, H//p_s*W//p_s, 2)，记录当前坐标[x,y]
 
         if self.patch_start_idx > 0:
@@ -237,15 +245,18 @@ class Aggregator(nn.Module):
         global_idx = 0
         output_list = []
 
-        for _ in range(self.aa_block_num):
+        for block_num in range(self.aa_block_num):
             for attn_type in self.aa_order:
                 if attn_type == "frame":
                     tokens, frame_idx, frame_intermediates = self._process_frame_attention(
                         tokens, B, S, P, C, frame_idx, pos=pos
                     )
                 elif attn_type == "global":
+                    global_merging = None
+                    if self.merging and block_num in self.merging:
+                        global_merging = block_num
                     tokens, global_idx, global_intermediates = self._process_global_attention(
-                        tokens, B, S, P, C, global_idx, pos=pos
+                        tokens, B, S, P, C, global_idx, pos=pos, global_merging=global_merging, patch_height=patch_height, patch_width=patch_width
                     )
                 else:
                     raise ValueError(f"Unknown attention type: {attn_type}")
@@ -284,7 +295,7 @@ class Aggregator(nn.Module):
 
         return tokens, frame_idx, intermediates
 
-    def _process_global_attention(self, tokens, B, S, P, C, global_idx, pos=None):
+    def _process_global_attention(self, tokens, B, S, P, C, global_idx, pos=None, global_merging:Optional[int]=None, patch_height: Optional[int]=None, patch_width: Optional[int]=None):
         """
         Process global attention blocks. We keep tokens in shape (B, S*P, C).
         """
@@ -302,7 +313,7 @@ class Aggregator(nn.Module):
             if self.training:
                 tokens = checkpoint(self.global_blocks[global_idx], tokens, pos, use_reentrant=self.use_reentrant)
             else:
-                tokens = self.global_blocks[global_idx](tokens, pos=pos)
+                tokens = self.global_blocks[global_idx](tokens, pos=pos, global_merging=global_merging, patch_height=patch_height, patch_width=patch_width)
             global_idx += 1
             intermediates.append(tokens.view(B, S, P, C))
 
