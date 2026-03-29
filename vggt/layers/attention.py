@@ -140,12 +140,12 @@ class Attention(nn.Module):
 
 
 class MemEffAttention(Attention):
-    def forward(self, x: Tensor, attn_bias=None, pos=None) -> Tensor:
+    def forward(self, x: Tensor, attn_bias=None, pos=None, global_merging:Optional[int]=None, patch_height: Optional[int]=None, patch_width: Optional[int]=None) -> Tensor:
         assert pos is None
         if not XFORMERS_AVAILABLE:
             if attn_bias is not None:
                 raise AssertionError("xFormers is required for using nested tensors")
-            return super().forward(x)
+            return super().forward(x, pos=pos, global_merging=global_merging, patch_height=patch_height, patch_width=patch_width)
 
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
