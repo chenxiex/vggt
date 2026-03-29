@@ -24,14 +24,40 @@ else:
 
 logger = logging.getLogger(__name__)
 
-def load_model(model_path:Path) -> VGGT:
+def load_model(model_path:Path, model_args: Optional[dict] = None) -> VGGT:
     if not model_path.exists():
         logger.info(f"Model doesn't exists. Downloading from {MODEL_URL}...")
         model_path.parent.mkdir(parents=True, exist_ok=True)
         urlretrieve(MODEL_URL, model_path)
 
-    model = VGGT()
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model_args = model_args or {}
+    model = VGGT(**model_args)
+    checkpoint = torch.load(model_path, map_location=device)
+    state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+
+    # Strip disabled heads from checkpoint so partial architectures can be loaded safely.
+    disabled_prefixes = []
+    if not model_args.get("enable_camera", True):
+        disabled_prefixes.append("camera_head.")
+    if not model_args.get("enable_point", True):
+        disabled_prefixes.append("point_head.")
+    if not model_args.get("enable_depth", True):
+        disabled_prefixes.append("depth_head.")
+    if not model_args.get("enable_track", True):
+        disabled_prefixes.append("track_head.")
+
+    if disabled_prefixes:
+        state_dict = {
+            k: v for k, v in state_dict.items()
+            if not any(k.startswith(prefix) for prefix in disabled_prefixes)
+        }
+
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        logger.warning(f"Unexpected keys when loading model: {unexpected}")
+    if missing:
+        logger.info(f"Missing keys when loading model: {missing}")
+
     model.eval()
     model = model.to(device)
     return model
