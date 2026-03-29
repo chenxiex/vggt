@@ -9,7 +9,7 @@
 
 import logging
 import os
-from typing import Callable, List, Any, Tuple, Dict
+from typing import Callable, List, Any, Tuple, Dict, Optional
 import warnings
 
 import torch
@@ -74,9 +74,9 @@ class Block(nn.Module):
 
         self.sample_drop_ratio = drop_path
 
-    def forward(self, x: Tensor, pos=None) -> Tensor:
+    def forward(self, x: Tensor, pos=None, global_merging:Optional[int]=None, patch_height: Optional[int]=None, patch_width: Optional[int]=None) -> Tensor:
         def attn_residual_func(x: Tensor, pos=None) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x), pos=pos))
+            return self.ls1(self.attn(self.norm1(x), pos=pos, global_merging=global_merging, patch_height=patch_height, patch_width=patch_width))
             # 直接链式地把这一堆层都堆在这里了。。。
 
         def ffn_residual_func(x: Tensor) -> Tensor:
