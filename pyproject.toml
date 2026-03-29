@@ -47,7 +47,7 @@ build-backend = "setuptools.build_meta"
 # setuptools configuration
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["vggt*"]
+include = ["vggt*", "merging*"]
 
 # Pixi configuration
 [tool.pixi.workspace]

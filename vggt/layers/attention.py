@@ -16,9 +16,6 @@ import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
-from merging.merge import (
-    token_merge_bipartite2d,
-)
 
 XFORMERS_AVAILABLE = False
 
@@ -71,6 +68,13 @@ class Attention(nn.Module):
         # FastVGGT merging
         u_a: Callable[[Tensor], Tensor] = lambda t: t
         if global_merging is not None:
+            try:
+                from merging.merge import token_merge_bipartite2d
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "No module named 'merging'. Install the project with local sources or disable global_merging."
+                ) from exc
+
             assert patch_height is not None and patch_width is not None, "patch_height and patch_width must be provided when global_merging is not None"
             generator = torch.Generator(device=x.device)
             generator.manual_seed(33)
