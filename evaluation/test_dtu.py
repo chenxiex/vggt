@@ -196,20 +196,24 @@ if __name__ == "__main__":
         with open(args.dtu_test_1200_path/"scan_list_test.txt") as f:
             scene_names = [line.strip() for line in f.readlines()]
 
+    model = None
+    if not args.no_pred:
+        logger.info(f"Using model from {args.model_path}")
+        model = load_model(args.model_path, model_args={"enable_point": False, "enable_track": False})
+
     for scene_name in scene_names:
         # 推理
         logger.info(f"Processing {scene_name}...")
         if not args.no_pred:
             logger.info("Predicting depth maps...")
-            model = load_model(args.model_path, model_args={"enable_point": False, "enable_track": False})
             images_path = args.dtu_test_1200_path/"Rectified"/scene_name
             sample_no = random.sample(range(0, 49), args.sample_size)
             sampled_image_paths = [
                 images_path/f"rect_{i+1:03d}_3_r5000.png" for i in sample_no]
+            assert model is not None, "Model should not be None when not skipping prediction"
             predictions = predict(sampled_image_paths, model)
             save_predictions(args.results_path, scene_name,
                              predictions, sample_no)
-            del model
             torch.cuda.empty_cache()
         else:
             logger.info("Loading predictions...")
@@ -255,3 +259,6 @@ if __name__ == "__main__":
         write_ply(args.results_path /
                   f"{int(scene_name[4:]):03d}.ply", points)
         logger.info(f"Finished processing {scene_name}, written to {int(scene_name[4:]):03d}.ply")
+    
+    if model is not None:
+        del model
