@@ -169,6 +169,7 @@ def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
 if __name__ == "__main__":
     configure_logging()
     logger.setLevel(logging.INFO)
+    random.seed(42)
     parser = argparse.ArgumentParser()
     parser.add_argument("--dtu_test_1200_path", type=Path,
                         required=True, help="Path to the DTU testing dataset")
