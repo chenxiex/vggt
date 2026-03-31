@@ -184,18 +184,18 @@ if __name__ == "__main__":
     parser.add_argument("--no_pred", action="store_true",
                         help="If set, skip prediction and only load existing predictions")
     parser.add_argument('--scans', type=str, default=None,
-                        help="Scene ID numbers to evaluate (e.g., 1,2,3)")
+                        help="Scene ID numbers to evaluate (e.g., 1,2,3). If not provided or set to 'true', will evaluate all scenes in the scan list.")
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:
         raise ValueError(
             "Model path must be provided if not skipping prediction.")
 
-    if args.scans:
-        scene_names = [f"scan{i}" for i in args.scans.split(',')]
-    else:
+    if not args.scans or args.scans.lower() == "true":
         with open(args.dtu_test_1200_path/"scan_list_test.txt") as f:
             scene_names = [line.strip() for line in f.readlines()]
+    else:
+        scene_names = [f"scan{i}" for i in args.scans.split(',')]
 
     model = None
     if not args.no_pred:
