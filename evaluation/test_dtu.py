@@ -183,6 +183,8 @@ if __name__ == "__main__":
                         help="Sample size for prediction")
     parser.add_argument("--no_pred", action="store_true",
                         help="If set, skip prediction and only load existing predictions")
+    parser.add_argument("--pred_only", action="store_true",
+                        help="If set, only perform prediction without alignment and fusion")
     parser.add_argument('--scans', type=str, default=None,
                         help="Scene ID numbers to evaluate (e.g., 1,2,3). If not provided or set to 'true', will evaluate all scenes in the scan list.")
     args = parser.parse_args()
@@ -221,45 +223,46 @@ if __name__ == "__main__":
             predictions, sample_no = load_predictions(
                 args.results_path, scene_name)
 
-        # 对齐
-        logger.info("Aligning predicted depth maps to ground truth...")
-        gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
-        gt_depth = load_gt_depth(gt_depths_path, sample_no)
-        gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
-        depths = predictions['depth'][0]
-        conf = predictions['depth_conf'][0]
-        upsampled_pred_depth = upsample_images(
-            depths, gt_depth_w, gt_depth_h)
-        upsampled_depth_conf = upsample_images(
-            conf, gt_depth_w, gt_depth_h)
+        if not args.pred_only:
+            # 对齐
+            logger.info("Aligning predicted depth maps to ground truth...")
+            gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
+            gt_depth = load_gt_depth(gt_depths_path, sample_no)
+            gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
+            depths = predictions['depth'][0]
+            conf = predictions['depth_conf'][0]
+            upsampled_pred_depth = upsample_images(
+                depths, gt_depth_w, gt_depth_h)
+            upsampled_depth_conf = upsample_images(
+                conf, gt_depth_w, gt_depth_h)
 
-        valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
+            valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
 
-        align_mask = valid_mask.reshape(-1)
-        align_depth_map = upsampled_pred_depth.reshape(-1)
-        align_gt_depth = gt_depth.reshape(-1)
+            align_mask = valid_mask.reshape(-1)
+            align_depth_map = upsampled_pred_depth.reshape(-1)
+            align_gt_depth = gt_depth.reshape(-1)
 
-        scale_val, shift_val = align_pred_to_gt(
-            align_depth_map.cpu().numpy(),
-            align_gt_depth.cpu().numpy(),
-            align_mask.cpu().numpy()
-        )
+            scale_val, shift_val = align_pred_to_gt(
+                align_depth_map.cpu().numpy(),
+                align_gt_depth.cpu().numpy(),
+                align_mask.cpu().numpy()
+            )
 
-        scale = torch.tensor(scale_val, dtype=torch.float32)
-        shift = torch.tensor(shift_val, dtype=torch.float32)
+            scale = torch.tensor(scale_val, dtype=torch.float32)
+            shift = torch.tensor(shift_val, dtype=torch.float32)
 
-        aligned_upsampled_depth = upsampled_pred_depth * scale + shift
-        depths = aligned_upsampled_depth * (upsampled_depth_conf > 3)
-        depths = depths.unsqueeze(1)
+            aligned_upsampled_depth = upsampled_pred_depth * scale + shift
+            depths = aligned_upsampled_depth * (upsampled_depth_conf > 3)
+            depths = depths.unsqueeze(1)
 
-        # 点云融合
-        logger.info("Fusing depth maps into point cloud and saving results...")
-        projs, rgbs = load_data(args.dtu_test_1200_path, scene_name, sample_no)
-        points = open3d_filter(depths, projs, rgbs,
-                               dist_thresh=1.0, batch_size=20, num_consist=4)
-        write_ply(args.results_path /
-                  f"{int(scene_name[4:]):03d}.ply", points)
-        logger.info(f"Finished processing {scene_name}, written to {int(scene_name[4:]):03d}.ply")
+            # 点云融合
+            logger.info("Fusing depth maps into point cloud and saving results...")
+            projs, rgbs = load_data(args.dtu_test_1200_path, scene_name, sample_no)
+            points = open3d_filter(depths, projs, rgbs,
+                                dist_thresh=1.0, batch_size=20, num_consist=4)
+            write_ply(args.results_path /
+                    f"{int(scene_name[4:]):03d}.ply", points)
+            logger.info(f"Finished processing {scene_name}, written to {int(scene_name[4:]):03d}.ply")
     
     if model is not None:
         del model
