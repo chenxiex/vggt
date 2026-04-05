@@ -3709,11 +3709,8 @@ evaluation = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://mirrors.hust.edu.cn/pypi/web/simple/" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.0", source = { registry = "https://mirrors.hust.edu.cn/pypi/web/simple/" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
-    { name = "tqdm" },
-]
-runtime = [
-    { name = "torch" },
     { name = "torchvision" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -3727,7 +3724,6 @@ requires-dist = [
     { name = "numpy", specifier = "<2" },
     { name = "omegaconf", marker = "extra == 'demo'" },
     { name = "onnxruntime", marker = "extra == 'demo'" },
-    { name = "open3d", marker = "extra == 'evaluation'" },
     { name = "open3d", marker = "extra == 'evaluation'", specifier = ">=0.19.0" },
     { name = "opencv-python" },
     { name = "opencv-python", marker = "extra == 'demo'" },
@@ -3741,14 +3737,13 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'demo'" },
     { name = "scipy", marker = "extra == 'evaluation'" },
     { name = "torch", marker = "extra == 'evaluation'" },
-    { name = "torch", marker = "extra == 'runtime'" },
-    { name = "torchvision", marker = "extra == 'runtime'" },
+    { name = "torchvision", marker = "extra == 'evaluation'" },
     { name = "tqdm", marker = "extra == 'demo'" },
     { name = "tqdm", marker = "extra == 'evaluation'" },
     { name = "trimesh", marker = "extra == 'demo'" },
     { name = "viser", marker = "extra == 'demo'", specifier = "==0.2.23" },
 ]
-provides-extras = ["demo", "runtime", "evaluation"]
+provides-extras = ["demo", "evaluation"]
 
 [[package]]
 name = "vhacdx"
