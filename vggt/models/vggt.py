@@ -59,37 +59,49 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         if query_points is not None and len(query_points.shape) == 2:
             query_points = query_points.unsqueeze(0)
 
-        aggregated_tokens_list, patch_start_idx = self.aggregator(images) # 稀疏层列表: 长度=depth，未保留层为None；保留层张量形状为 [B, S, P, 2C]
+        backbone_dtype = next(self.aggregator.parameters()).dtype
+        images_backbone = images.to(backbone_dtype) if images.dtype != backbone_dtype else images
+        aggregated_tokens_list, patch_start_idx = self.aggregator(images_backbone) # 稀疏层列表: 长度=depth，未保留层为None；保留层张量形状为 [B, S, P, 2C]
+
+        # Heads stay in fp32; cast once at the boundary for numerical stability.
+        aggregated_tokens_list_fp32 = [
+            tokens.float() if tokens is not None else None for tokens in aggregated_tokens_list
+        ]
+        images_fp32 = images.float()
+        query_points_fp32 = query_points.float() if query_points is not None else None
 
         predictions = {}
 
         with torch.amp.autocast("cuda", enabled=False):
             if self.camera_head is not None:
-                pose_enc_list = self.camera_head(aggregated_tokens_list)
+                pose_enc_list = self.camera_head(aggregated_tokens_list_fp32)
                 predictions["pose_enc"] = pose_enc_list[-1]  # pose encoding of the last iteration
                 predictions["pose_enc_list"] = pose_enc_list
                 
             if self.depth_head is not None:
                 depth, depth_conf = self.depth_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    aggregated_tokens_list_fp32, images=images_fp32, patch_start_idx=patch_start_idx
                 )
                 predictions["depth"] = depth
                 predictions["depth_conf"] = depth_conf
 
             if self.point_head is not None:
                 pts3d, pts3d_conf = self.point_head(
-                    aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
+                    aggregated_tokens_list_fp32, images=images_fp32, patch_start_idx=patch_start_idx
                 )
                 predictions["world_points"] = pts3d
                 predictions["world_points_conf"] = pts3d_conf
 
-        if self.track_head is not None and query_points is not None:
-            track_list, vis, conf = self.track_head(
-                aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx, query_points=query_points
-            )
-            predictions["track"] = track_list[-1]  # track of the last iteration
-            predictions["vis"] = vis
-            predictions["conf"] = conf
+            if self.track_head is not None and query_points_fp32 is not None:
+                track_list, vis, conf = self.track_head(
+                    aggregated_tokens_list_fp32,
+                    images=images_fp32,
+                    patch_start_idx=patch_start_idx,
+                    query_points=query_points_fp32,
+                )
+                predictions["track"] = track_list[-1]  # track of the last iteration
+                predictions["vis"] = vis
+                predictions["conf"] = conf
 
         if not self.training:
             predictions["images"] = images  # store the images for visualization during inference

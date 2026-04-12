@@ -60,6 +60,11 @@ def load_model(model_path:Path, model_args: Optional[dict] = None) -> VGGT:
 
     model.eval()
     model = model.to(device)
+
+    if device.type == "cuda":
+        # Keep backbone weights in AMP dtype to save VRAM.
+        model.aggregator.to(dtype=dtype)
+
     return model
 
 
