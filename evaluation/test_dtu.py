@@ -317,7 +317,12 @@ def run_worker(
     model = None
     if not args.no_pred:
         logger.info("%s Using model from %s", worker_tag, args.model_path)
-        model = load_model(args.model_path, model_args={"enable_point": False, "enable_track": False})
+        model = load_model(
+            args.model_path,
+            model_args={"enable_point": False, "enable_track": False},
+            smoothquant_path=args.smoothquant_scale_path,
+            smoothquant_strict=not args.smoothquant_allow_missing,
+        )
 
     try:
         for scene_name in scene_names:
@@ -363,6 +368,10 @@ if __name__ == "__main__":
                         help="Comma-separated GPU ids for scene-level parallelism (e.g., 0,1,2). Default is 'auto' (all visible GPUs).")
     parser.add_argument('--seed', type=int, default=42,
                         help="Random seed for deterministic per-scene image sampling.")
+    parser.add_argument('--smoothquant_scale_path', type=Path, default=None,
+                        help="Path to SmoothQuant calibration artifact (.pt) for W8A16 attention inference.")
+    parser.add_argument('--smoothquant_allow_missing', action='store_true',
+                        help="Allow missing SmoothQuant scales for some attention layers.")
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:

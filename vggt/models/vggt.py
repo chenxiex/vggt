@@ -7,6 +7,8 @@
 import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
+from pathlib import Path
+from typing import Any, Mapping
 
 from vggt.models.aggregator import Aggregator
 from vggt.heads.camera_head import CameraHead
@@ -107,4 +109,17 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
             predictions["images"] = images  # store the images for visualization during inference
 
         return predictions
+
+    def apply_attention_smoothquant(
+        self,
+        scales_or_artifact_or_path: Mapping[str, Any] | str | Path,
+        strict: bool = True,
+    ) -> dict[str, Any]:
+        """Apply SmoothQuant-based W8A16 quantization to attention qkv/proj linear layers."""
+        from vggt.quantization.smoothquant import apply_smoothquant_w8a16, load_smoothquant_artifact
+
+        if isinstance(scales_or_artifact_or_path, (str, Path)):
+            scales_or_artifact_or_path = load_smoothquant_artifact(scales_or_artifact_or_path)
+
+        return apply_smoothquant_w8a16(self, scales_or_artifact_or_path, strict=strict)
 

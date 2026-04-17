@@ -13,6 +13,8 @@ from urllib.request import urlretrieve
 import os
 import logging
 
+from vggt.quantization.smoothquant import apply_smoothquant_w8a16, load_smoothquant_artifact
+
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
 
@@ -24,7 +26,12 @@ else:
 
 logger = logging.getLogger(__name__)
 
-def load_model(model_path:Path, model_args: Optional[dict] = None) -> VGGT:
+def load_model(
+    model_path: Path,
+    model_args: Optional[dict] = None,
+    smoothquant_path: Optional[Path] = None,
+    smoothquant_strict: bool = True,
+) -> VGGT:
     if not model_path.exists():
         logger.info(f"Model doesn't exists. Downloading from {MODEL_URL}...")
         model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +64,16 @@ def load_model(model_path:Path, model_args: Optional[dict] = None) -> VGGT:
         logger.warning(f"Unexpected keys when loading model: {unexpected}")
     if missing:
         logger.info(f"Missing keys when loading model: {missing}")
+
+    if smoothquant_path is not None:
+        artifact = load_smoothquant_artifact(smoothquant_path)
+        quant_info = apply_smoothquant_w8a16(model, artifact, strict=smoothquant_strict)
+        logger.info(
+            "Applied SmoothQuant W8A16 to %d attention linear layers (missing=%d, unused=%d)",
+            quant_info["replaced"],
+            len(quant_info["missing"]),
+            len(quant_info["unused"]),
+        )
 
     model.eval()
     model = model.to(device)

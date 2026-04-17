@@ -176,6 +176,38 @@ Run the following command to run reconstruction and visualize the point clouds i
 python demo_viser.py --image_folder path/to/your/images/folder
 ```
 
+## SmoothQuant W8A16 (Attention)
+
+The repository now includes a SmoothQuant-style workflow for attention-layer linear projections (`qkv` and `proj`).
+
+1. Run calibration on a small image set to estimate `weight_max`, `act_max`, and per-layer `scale`:
+
+```bash
+python evaluation/calibrate_smoothquant.py \
+  --model_path ./ckpt/model.pt \
+  --calib_dir /YOUR/CALIB/IMAGES \
+  --output_path ./outputs/smoothquant_scales.pt \
+  --num_samples 32 \
+  --batch_size 8
+```
+
+2. Apply SmoothQuant scales before inference:
+
+```python
+from vggt.models.vggt import VGGT
+
+model = VGGT()
+model.load_state_dict(...)  # your checkpoint
+model.apply_attention_smoothquant("./outputs/smoothquant_scales.pt")
+model.eval()
+```
+
+For evaluation scripts, you can also pass the artifact directly:
+
+```bash
+python evaluation/test_dtu.py ... --smoothquant_scale_path ./outputs/smoothquant_scales.pt
+```
+
 ## Exporting to COLMAP Format
 
 We also support exporting VGGT's predictions directly to COLMAP format, by:

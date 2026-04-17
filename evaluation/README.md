@@ -138,6 +138,7 @@ python test_dtu.py \
   --dtu_depths_path "${DATASETS_PATH}/dtu-depths-raw" \
   --results_path "${RESULTS_PATH}" \
   --model_path "${CKPT_FILE_PATH}" \
+  --smoothquant_scale_path "/YOUR/SMOOTHQUANT_SCALES.pt" \
 ```
 
 CKPT file will be downloaded automatically if not already exists. 3d ply points cloud will be saved to `${RESULTS_PATH}/XXX.ply`. You can then use the official matlab evaluation code under `${DATASETS_PATH}/dtu-sample`. I also found a python implementation [DTUeval-python](https://github.com/chenxiex/DTUeval-python). You can use it like this:
