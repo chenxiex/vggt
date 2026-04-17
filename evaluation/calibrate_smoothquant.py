@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recursive", action="store_true", help="Recursively search images under calib_dir")
     parser.add_argument("--weight_qmax", type=float, default=127.0, help="Weight quant range max for INT8")
     parser.add_argument("--act_qmax", type=float, default=65504.0, help="Activation range max for A16")
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=0.95,
+        help="EMA momentum for per-batch scale update. First batch writes scale directly.",
+    )
     parser.add_argument("--disable_amp", action="store_true", help="Disable AMP during calibration")
     return parser.parse_args()
 
@@ -173,6 +179,9 @@ def main() -> None:
     if args.batch_size <= 0:
         raise ValueError("batch_size must be positive")
 
+    if args.momentum < 0.0 or args.momentum > 1.0:
+        raise ValueError("momentum must be in [0, 1]")
+
     if args.dtu_images_per_scene < 0:
         raise ValueError("dtu_images_per_scene must be >= 0")
 
@@ -261,6 +270,7 @@ def main() -> None:
         run_calibration=run_calibration,
         weight_qmax=args.weight_qmax,
         act_qmax=args.act_qmax,
+        momentum=args.momentum,
     )
 
     artifact["meta"].update(

@@ -104,15 +104,25 @@ def calibrate_attention_scales(
     run_calibration: Callable[[], None],
     weight_qmax: float = DEFAULT_WEIGHT_QMAX,
     act_qmax: float = DEFAULT_ACT_QMAX,
+    momentum: float = 0.95,
     eps: float = EPS,
 ) -> Dict[str, Any]:
     """
-    Collect activation maxima by running `run_calibration` once and compute SmoothQuant scales.
+    Collect activation statistics by running `run_calibration` once and update SmoothQuant
+    scales at every batch with EMA.
 
     `run_calibration` should execute model forward(s) under eval/no_grad.
     """
+    if momentum < 0.0 or momentum > 1.0:
+        raise ValueError(f"momentum must be in [0, 1], got {momentum}")
+
     layers = find_attention_linear_layers(model)
     act_max: Dict[str, float] = {name: 0.0 for name in layers}
+    weight_max: Dict[str, float] = {
+        layer_name: float(linear.weight.detach().abs().amax().item()) for layer_name, linear in layers.items()
+    }
+    scales_ema: Dict[str, float | None] = {name: None for name in layers}
+    update_counts: Dict[str, int] = {name: 0 for name in layers}
     handles = []
 
     for layer_name, linear in layers.items():
@@ -127,6 +137,21 @@ def calibrate_attention_scales(
             if cur > act_max[name]:
                 act_max[name] = cur
 
+            new_scale = compute_smooth_scale(
+                weight_max=weight_max[name],
+                act_max=cur,
+                weight_qmax=weight_qmax,
+                act_qmax=act_qmax,
+                eps=eps,
+            )
+            old_scale = scales_ema[name]
+            if old_scale is None:
+                # First observed batch initializes the scale directly.
+                scales_ema[name] = new_scale
+            else:
+                scales_ema[name] = old_scale * momentum + new_scale * (1.0 - momentum)
+            update_counts[name] += 1
+
         handles.append(linear.register_forward_pre_hook(_pre_hook))
 
     try:
@@ -139,26 +164,33 @@ def calibrate_attention_scales(
     stats: Dict[str, Dict[str, float]] = {}
 
     for layer_name, linear in layers.items():
-        weight_max = float(linear.weight.detach().abs().amax().item())
+        del linear
         layer_act_max = float(act_max[layer_name])
-        scale = compute_smooth_scale(
-            weight_max=weight_max,
-            act_max=layer_act_max,
-            weight_qmax=weight_qmax,
-            act_qmax=act_qmax,
-            eps=eps,
-        )
+        scale = scales_ema[layer_name]
+        if scale is None:
+            # Fallback for layers that are not executed during calibration.
+            scale = compute_smooth_scale(
+                weight_max=weight_max[layer_name],
+                act_max=layer_act_max,
+                weight_qmax=weight_qmax,
+                act_qmax=act_qmax,
+                eps=eps,
+            )
+        scale = float(scale)
         scales[layer_name] = scale
         stats[layer_name] = {
-            "weight_max": weight_max,
+            "weight_max": weight_max[layer_name],
             "act_max": layer_act_max,
             "scale": scale,
+            "updates": float(update_counts[layer_name]),
         }
 
     return {
         "meta": {
             "weight_qmax": float(weight_qmax),
             "act_qmax": float(act_qmax),
+            "momentum": float(momentum),
+            "scale_update": "ema_per_batch",
             "num_layers": len(layers),
         },
         "scales": scales,
