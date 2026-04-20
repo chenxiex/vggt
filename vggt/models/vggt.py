@@ -115,7 +115,7 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         scales_or_artifact_or_path: Mapping[str, Any] | str | Path,
         strict: bool = True,
     ) -> dict[str, Any]:
-        """Apply SmoothQuant-based W8A16 quantization to attention qkv/proj linear layers."""
+        """Apply SmoothQuant-based W8A16 quantization to frame/global attention qkv/proj layers."""
         from vggt.quantization.smoothquant import apply_smoothquant_w8a16, load_smoothquant_artifact
 
         if isinstance(scales_or_artifact_or_path, (str, Path)):

@@ -12,12 +12,35 @@ DEFAULT_WEIGHT_QMAX = 127.0
 DEFAULT_ACT_QMAX = 65504.0
 EPS = 1e-8
 
+DEFAULT_ATTENTION_MODULE_PREFIXES: tuple[str, ...] = (
+    "aggregator.frame_blocks",
+    "aggregator.global_blocks",
+    "frame_blocks",
+    "global_blocks",
+)
 
-def find_attention_linear_layers(model: nn.Module) -> Dict[str, nn.Linear]:
-    """Return all qkv/proj Linear layers inside attention modules."""
+
+def _module_name_matches_prefixes(module_name: str, module_prefixes: tuple[str, ...]) -> bool:
+    return any(
+        module_name == prefix or module_name.startswith(f"{prefix}.")
+        for prefix in module_prefixes
+    )
+
+
+def find_attention_linear_layers(
+    model: nn.Module,
+    module_prefixes: tuple[str, ...] | None = None,
+) -> Dict[str, nn.Linear]:
+    """Return qkv/proj Linear layers inside attention modules.
+
+    If ``module_prefixes`` is provided, only attention modules whose names start
+    with one of the prefixes are included.
+    """
     layers: Dict[str, nn.Linear] = {}
     for module_name, module in model.named_modules():
         if not isinstance(module, Attention):
+            continue
+        if module_prefixes is not None and not _module_name_matches_prefixes(module_name, module_prefixes):
             continue
         for linear_name in ("qkv", "proj"):
             linear = getattr(module, linear_name, None)
@@ -106,17 +129,21 @@ def calibrate_attention_scales(
     act_qmax: float = DEFAULT_ACT_QMAX,
     momentum: float = 0.95,
     eps: float = EPS,
+    module_prefixes: tuple[str, ...] = DEFAULT_ATTENTION_MODULE_PREFIXES,
 ) -> Dict[str, Any]:
     """
     Collect activation statistics by running `run_calibration` once and update SmoothQuant
     scales at every batch with EMA.
 
     `run_calibration` should execute model forward(s) under eval/no_grad.
+
+    By default, calibration is restricted to frame/global attention blocks in
+    the aggregator.
     """
     if momentum < 0.0 or momentum > 1.0:
         raise ValueError(f"momentum must be in [0, 1], got {momentum}")
 
-    layers = find_attention_linear_layers(model)
+    layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
     act_max: Dict[str, float] = {name: 0.0 for name in layers}
     weight_max: Dict[str, float] = {
         layer_name: float(linear.weight.detach().abs().amax().item()) for layer_name, linear in layers.items()
@@ -289,10 +316,11 @@ def apply_smoothquant_w8a16(
     strict: bool = True,
     weight_qmax: float = DEFAULT_WEIGHT_QMAX,
     eps: float = EPS,
+    module_prefixes: tuple[str, ...] = DEFAULT_ATTENTION_MODULE_PREFIXES,
 ) -> Dict[str, Any]:
-    """Replace attention qkv/proj linear layers with SmoothQuantW8A16Linear."""
+    """Replace frame/global attention qkv/proj linear layers with SmoothQuantW8A16Linear."""
     scales = normalize_scale_dict(scales_or_artifact)
-    layers = find_attention_linear_layers(model)
+    layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
 
     missing = []
     replaced = []
