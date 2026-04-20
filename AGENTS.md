@@ -1,0 +1,1 @@
+If additional python packages are needed, add them to pyproject.toml and use `uv` to install them.
