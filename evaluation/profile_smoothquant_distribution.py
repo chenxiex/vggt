@@ -18,6 +18,10 @@ from vggt.utils.load_fn import load_and_preprocess_images
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+TARGET_LAYER_PREFIXES = ("aggregator.frame_blocks", "aggregator.global_blocks")
+
+SCALE_DESIGN_PER_BLOCK = "per_block"
+SCALE_DESIGN_PER_PROJECTION = "per_projection"
 
 
 class RunningDistributionStats:
@@ -370,6 +374,29 @@ def create_stats_collector(args: argparse.Namespace) -> RunningDistributionStats
     )
 
 
+def is_target_layer(layer_name: str) -> bool:
+    return layer_name.startswith(TARGET_LAYER_PREFIXES)
+
+
+def filter_target_layers(layers: Dict[str, torch.nn.Linear]) -> Dict[str, torch.nn.Linear]:
+    return {layer_name: layer for layer_name, layer in layers.items() if is_target_layer(layer_name)}
+
+
+def infer_smooth_scale_design(layer_names: Iterable[str]) -> str:
+    has_qkv = False
+    has_proj = False
+    for layer_name in layer_names:
+        suffix = layer_name.rsplit(".", 1)[-1]
+        if suffix == "qkv":
+            has_qkv = True
+        elif suffix == "proj":
+            has_proj = True
+
+    if has_qkv or has_proj:
+        return SCALE_DESIGN_PER_PROJECTION
+    return SCALE_DESIGN_PER_BLOCK
+
+
 def safe_divide(numerator: float, denominator: float) -> Optional[float]:
     if denominator <= 0.0:
         return None
@@ -499,9 +526,19 @@ def main() -> None:
     if device.type == "cuda" and amp_dtype is not None:
         model.aggregator.to(dtype=amp_dtype)
 
-    layers = find_attention_linear_layers(model)
+    all_layers = find_attention_linear_layers(model)
+    layers = filter_target_layers(all_layers)
     if not layers:
-        raise RuntimeError("No attention qkv/proj linear layers found in model")
+        raise RuntimeError(
+            "No attention qkv/proj linear layers found under frame/global blocks. "
+            f"Current prefixes: {TARGET_LAYER_PREFIXES}"
+        )
+
+    smooth_scale_design = infer_smooth_scale_design(layers.keys())
+    point_granularity = "projection" if smooth_scale_design == SCALE_DESIGN_PER_PROJECTION else "block"
+    print(f"Total attention linear layers in model: {len(all_layers)}")
+    print(f"Selected frame/global linear layers: {len(layers)}")
+    print(f"Smooth scale design: {smooth_scale_design} ({point_granularity} points)")
 
     weight_collectors = {layer_name: create_stats_collector(args) for layer_name in layers}
     weight_global_collector = create_stats_collector(args)
@@ -593,6 +630,12 @@ def main() -> None:
             "percentiles": [float(v) for v in percentiles],
             "device": str(device),
             "amp_dtype": str(amp_dtype) if amp_dtype is not None else None,
+            "layer_scope": "frame_global_only",
+            "layer_name_prefixes": list(TARGET_LAYER_PREFIXES),
+            "num_layers_total_attention_linear": int(len(all_layers)),
+            "num_layers_selected": int(len(layers)),
+            "smooth_scale_design": smooth_scale_design,
+            "point_granularity": point_granularity,
         },
         "weights": {
             "global": weight_global_stats,
