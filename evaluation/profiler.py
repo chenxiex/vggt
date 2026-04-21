@@ -29,7 +29,13 @@ _REPORT_LEVEL_ALIASES = {
     "chart": "plot",
     "plot": "plot",
     "visual": "plot",
+    "4": "overall",
+    "avg": "overall",
+    "average": "overall",
+    "overall": "overall",
 }
+
+_OVERALL_RUN_COUNT_KEY = "overall_run_count"
 
 
 def _env_flag(name: str) -> bool:
@@ -44,6 +50,41 @@ def _env_report_level(name: str) -> str:
 
 def _bytes_to_mib(num_bytes: int) -> float:
     return round(num_bytes / (1024 ** 2), 4)
+
+
+def _is_numeric(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _average_numeric(previous: Any, current: Any, previous_runs: int) -> Any:
+    total_runs = previous_runs + 1
+    averaged = (float(previous) * previous_runs + float(current)) / total_runs
+    if isinstance(previous, int) and isinstance(current, int):
+        return int(round(averaged))
+    return round(averaged, 4)
+
+
+def _average_nested(previous: Any, current: Any, previous_runs: int) -> Any:
+    if _is_numeric(previous) and _is_numeric(current):
+        return _average_numeric(previous, current, previous_runs)
+
+    if isinstance(previous, dict) and isinstance(current, dict):
+        keys = set(previous) | set(current)
+        merged: Dict[str, Any] = {}
+        for key in keys:
+            if key in previous and key in current:
+                merged[key] = _average_nested(previous[key], current[key], previous_runs)
+            elif key in current:
+                merged[key] = current[key]
+            else:
+                merged[key] = previous[key]
+        return merged
+
+    if isinstance(previous, list) and isinstance(current, list):
+        # Per-run timeline/path lists are not stable enough for meaningful averaging.
+        return current
+
+    return current
 
 
 def _format_mib(value_mib: Optional[float]) -> str:
@@ -445,9 +486,38 @@ class PredictionMemoryProfiler:
 
     def _report_lines(self) -> List[str]:
         lines = self._build_summary_lines()
-        if self.report_level in {"detailed", "plot"}:
+        if self.report_level in {"detailed", "plot", "overall"}:
             lines.extend(self._build_detailed_lines())
         return lines
+
+    def _merge_overall_stats(self, output_file: Path) -> Dict[str, Any]:
+        current_stats = self.stats
+        previous_stats: Optional[Dict[str, Any]] = None
+        previous_runs = 0
+
+        if output_file.exists():
+            try:
+                loaded = json.loads(output_file.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+
+            if isinstance(loaded, dict):
+                run_count = loaded.get(_OVERALL_RUN_COUNT_KEY)
+                if isinstance(run_count, int) and run_count > 0:
+                    previous_runs = run_count
+                else:
+                    previous_runs = 1
+
+                previous_stats = dict(loaded)
+                previous_stats.pop(_OVERALL_RUN_COUNT_KEY, None)
+
+        merged = current_stats
+        if previous_stats is not None:
+            merged = _average_nested(previous_stats, current_stats, previous_runs)
+
+        merged = dict(merged)
+        merged[_OVERALL_RUN_COUNT_KEY] = previous_runs + 1
+        return merged
 
     def _output_dir_path(self) -> Path:
         return self._resolved_output_dir_path
@@ -620,9 +690,12 @@ class PredictionMemoryProfiler:
             self._emit_report()
 
         if self.enabled:
-            payload = json.dumps(self.stats, indent=2)
             output_file = self._json_output_path()
             output_file.parent.mkdir(parents=True, exist_ok=True)
+            payload_stats = self.stats
+            if self.report_level == "overall":
+                payload_stats = self._merge_overall_stats(output_file)
+            payload = json.dumps(payload_stats, indent=2)
             output_file.write_text(payload, encoding="utf-8")
             if self.report_level != "quiet":
                 print(f"json: {output_file}", flush=True)
