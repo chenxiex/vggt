@@ -45,7 +45,7 @@ def _env_flag(name: str) -> bool:
 
 def _env_report_level(name: str) -> str:
     value = os.environ.get(name, "summary")
-    return _REPORT_LEVEL_ALIASES.get(value.strip().lower(), "summary")
+    return _REPORT_LEVEL_ALIASES[value.strip().lower()]
 
 
 def _bytes_to_mib(num_bytes: int) -> float:
