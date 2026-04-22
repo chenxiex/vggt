@@ -4,7 +4,6 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
-import logging
 
 import torch
 
@@ -40,8 +39,10 @@ _OVERALL_RUN_COUNT_KEY = "overall_run_count"
 
 def _env_report_level(name: str) -> str:
     value = os.environ.get(name, "quiet")
-    logging.info("resolving report level from env %s=%s", name, value)
-    normalized = value.strip().lower() or "quiet"
+    print("resolving report level from env %s=%s", name, value)
+    normalized = value.strip().lower()
+    if normalized not in _REPORT_LEVEL_ALIASES:
+        raise ValueError(f"invalid report level '{value}' from env {name}, expected one of: {', '.join(set(_REPORT_LEVEL_ALIASES.values()))}")
     return _REPORT_LEVEL_ALIASES[normalized]
 
 
