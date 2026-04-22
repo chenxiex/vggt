@@ -39,7 +39,6 @@ _OVERALL_RUN_COUNT_KEY = "overall_run_count"
 
 def _env_report_level(name: str) -> str:
     value = os.environ.get(name, "quiet")
-    print("resolving report level from env %s=%s", name, value)
     normalized = value.strip().lower()
     if normalized not in _REPORT_LEVEL_ALIASES:
         raise ValueError(f"invalid report level '{value}' from env {name}, expected one of: {', '.join(set(_REPORT_LEVEL_ALIASES.values()))}")
