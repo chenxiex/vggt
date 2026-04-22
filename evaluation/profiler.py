@@ -10,7 +10,6 @@ import torch
 from vggt.models.vggt import VGGT
 
 
-VGGT_ENABLE_PROFILER_ENV = "VGGT_ENABLE_PROFILER"
 VGGT_PROFILER_OUTPUT_DIR_ENV = "VGGT_PROFILER_OUTPUT_DIR"
 VGGT_PROFILER_REPORT_LEVEL_ENV = "VGGT_PROFILER_REPORT_LEVEL"
 
@@ -38,14 +37,10 @@ _REPORT_LEVEL_ALIASES = {
 _OVERALL_RUN_COUNT_KEY = "overall_run_count"
 
 
-def _env_flag(name: str) -> bool:
-    value = os.environ.get(name, "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _env_report_level(name: str) -> str:
-    value = os.environ.get(name, "summary")
-    return _REPORT_LEVEL_ALIASES[value.strip().lower()]
+    value = os.environ.get(name, "quiet")
+    normalized = value.strip().lower() or "quiet"
+    return _REPORT_LEVEL_ALIASES[normalized]
 
 
 def _bytes_to_mib(num_bytes: int) -> float:
@@ -136,9 +131,9 @@ def _cuda_peak_memory(device: torch.device) -> Dict[str, Any]:
 
 class PredictionMemoryProfiler:
     def __init__(self, model: VGGT, device: torch.device, dtype: torch.dtype):
-        self.enabled = _env_flag(VGGT_ENABLE_PROFILER_ENV)
-        self.output_dir = os.environ.get(VGGT_PROFILER_OUTPUT_DIR_ENV)
         self.report_level = _env_report_level(VGGT_PROFILER_REPORT_LEVEL_ENV)
+        self.enabled = self.report_level != "quiet"
+        self.output_dir = os.environ.get(VGGT_PROFILER_OUTPUT_DIR_ENV)
         self.active = self.enabled and torch.cuda.is_available() and device.type == "cuda"
         if self.output_dir:
             self._resolved_output_dir_path = Path(self.output_dir)
@@ -161,7 +156,6 @@ class PredictionMemoryProfiler:
             "device": str(device),
             "autocast_dtype": str(dtype),
             "env": {
-                "enable": VGGT_ENABLE_PROFILER_ENV,
                 "output_dir": VGGT_PROFILER_OUTPUT_DIR_ENV,
                 "report_level": VGGT_PROFILER_REPORT_LEVEL_ENV,
                 "resolved_output_dir": str(self._resolved_output_dir_path),
@@ -186,7 +180,7 @@ class PredictionMemoryProfiler:
 
     def _inactive_reason(self) -> Optional[str]:
         if not self.enabled:
-            return "disabled_by_env"
+            return "disabled_by_report_level"
         if not torch.cuda.is_available():
             return "cuda_unavailable"
         if self._device.type != "cuda":
@@ -387,7 +381,9 @@ class PredictionMemoryProfiler:
         lines.append(f"report level: {self.report_level}")
 
         if not self.enabled:
-            lines.append(f"profiling disabled by env {VGGT_ENABLE_PROFILER_ENV}")
+            lines.append(
+                f"profiling disabled because {VGGT_PROFILER_REPORT_LEVEL_ENV} is unset or resolves to 'quiet'"
+            )
             return lines
 
         if not self.active:
