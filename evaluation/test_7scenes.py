@@ -66,6 +66,17 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for deterministic frame sampling",
     )
     parser.add_argument(
+        "--smoothquant_scale_path",
+        type=Path,
+        default=None,
+        help="Path to SmoothQuant calibration artifact (.pt) for W8A16 attention inference.",
+    )
+    parser.add_argument(
+        "--smoothquant_allow_missing",
+        action="store_true",
+        help="Allow missing SmoothQuant scales for some attention layers.",
+    )
+    parser.add_argument(
         "--output_json",
         type=Path,
         default=None,
@@ -377,6 +388,8 @@ def main() -> None:
     model = load_model(
         args.model_path,
         model_args={"enable_point": False, "enable_depth": False, "enable_track": False},
+        smoothquant_path=args.smoothquant_scale_path,
+        smoothquant_strict=not args.smoothquant_allow_missing,
     )
 
     all_scene_results: dict[str, dict] = {}
@@ -464,6 +477,8 @@ def main() -> None:
             "scenes": scenes,
             "num_frames": args.num_frames,
             "seed": args.seed,
+            "smoothquant_scale_path": str(args.smoothquant_scale_path) if args.smoothquant_scale_path is not None else None,
+            "smoothquant_allow_missing": args.smoothquant_allow_missing,
         },
         "overall": overall_metrics,
         "scenes": all_scene_results,
