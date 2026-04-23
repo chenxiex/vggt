@@ -16,6 +16,8 @@ import logging
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
 
+_XY1_CACHE: dict[tuple[str, int, int], torch.Tensor] = {}
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -23,6 +25,23 @@ else:
     dtype = torch.float32
 
 logger = logging.getLogger(__name__)
+
+
+def _get_xy1_grid(height: int, width: int, device: torch.device) -> torch.Tensor:
+    key = (str(device), height, width)
+    cached = _XY1_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    y, x = torch.meshgrid([
+        torch.arange(0, height, dtype=torch.float32, device=device),
+        torch.arange(0, width, dtype=torch.float32, device=device),
+    ])
+    y = y.contiguous().view(height * width)
+    x = x.contiguous().view(height * width)
+    xy1 = torch.stack((x, y, torch.ones_like(x)))
+    _XY1_CACHE[key] = xy1
+    return xy1
 
 def load_model(model_path:Path, model_args: Optional[dict] = None) -> VGGT:
     if not model_path.exists():
@@ -171,25 +190,22 @@ def upsample_images(images: torch.Tensor, target_w: int, target_h: int) -> torch
     return upsampled_images
 
 
-def generate_points_from_depth(depth, proj):
+def generate_points_from_depth(depth, proj=None, inv_proj=None):
     '''
     :param depth: (B, 1, H, W)
     :param proj: (B, 4, 4)
     :return: point_cloud (B, 3, H, W)
     '''
     batch, height, width = depth.shape[0], depth.shape[2], depth.shape[3]
-    inv_proj = torch.inverse(proj)
+    if inv_proj is None:
+        if proj is None:
+            raise ValueError("Either proj or inv_proj must be provided.")
+        inv_proj = torch.inverse(proj)
 
     rot = inv_proj[:, :3, :3]  # [B,3,3]
     trans = inv_proj[:, :3, 3:4]  # [B,3,1]
 
-    y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=depth.device),
-                           torch.arange(0, width, dtype=torch.float32, device=depth.device)])
-    y, x = y.contiguous(), x.contiguous()
-    y, x = y.view(height * width), x.view(height * width)
-    # [u,v,1]
-    xyz = torch.stack((x, y, torch.ones_like(x)))  # [3, H*W]
-    xyz = torch.unsqueeze(xyz, 0).repeat(batch, 1, 1)  # [B, 3, H*W]
+    xyz = _get_xy1_grid(height, width, depth.device).unsqueeze(0).expand(batch, -1, -1)
     # (RK)^{-1}*[u,v,1]
     rot_xyz = torch.matmul(rot, xyz)  # [B, 3, H*W]
     # (RK)^{-1}*[u,v,1]*d
@@ -201,7 +217,7 @@ def generate_points_from_depth(depth, proj):
     return proj_xyz
 
 
-def homo_warping(src_fea, src_proj, ref_proj, depth_values):
+def homo_warping(src_fea, src_proj, ref_proj, depth_values, ref_inv_proj=None):
     '''
     该函数将src_fea从src_proj投影到ref_proj。首先利用src_proj和ref_proj算出depth_values在src上的投影，然后根据这个投影的坐标对src_fea进行采样。
     Args:
@@ -216,16 +232,13 @@ def homo_warping(src_fea, src_proj, ref_proj, depth_values):
     height, width = src_fea.shape[2], src_fea.shape[3]
 
     with torch.no_grad():
-        proj = torch.matmul(src_proj, torch.inverse(ref_proj))
+        if ref_inv_proj is None:
+            ref_inv_proj = torch.inverse(ref_proj)
+        proj = torch.matmul(src_proj, ref_inv_proj)
         rot = proj[:, :3, :3]  # [B,3,3]
         trans = proj[:, :3, 3:4]  # [B,3,1]
 
-        y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=src_fea.device),
-                               torch.arange(0, width, dtype=torch.float32, device=src_fea.device)])
-        y, x = y.contiguous(), x.contiguous()
-        y, x = y.view(height * width), x.view(height * width)
-        xyz = torch.stack((x, y, torch.ones_like(x)))  # [3, H*W]
-        xyz = torch.unsqueeze(xyz, 0).repeat(batch, 1, 1)  # [B, 3, H*W]
+        xyz = _get_xy1_grid(height, width, src_fea.device).unsqueeze(0).expand(batch, -1, -1)
         rot_xyz = torch.matmul(rot, xyz)  # [B, 3, H*W]
 
         rot_depth_xyz = rot_xyz.unsqueeze(
@@ -248,18 +261,31 @@ def homo_warping(src_fea, src_proj, ref_proj, depth_values):
     return warped_src_fea
 
 
-def filter_depth(ref_depth, src_depths, ref_proj, src_projs):
-    ref_pc = generate_points_from_depth(ref_depth, ref_proj)
-    src_pcs = generate_points_from_depth(src_depths, src_projs)
+def filter_depth(
+    ref_depth,
+    src_depths,
+    ref_proj,
+    src_projs,
+    ref_inv_proj=None,
+    src_inv_projs=None,
+):
+    ref_pc = generate_points_from_depth(ref_depth, proj=ref_proj, inv_proj=ref_inv_proj)
+    src_pcs = generate_points_from_depth(src_depths, proj=src_projs, inv_proj=src_inv_projs)
 
-    aligned_pcs = homo_warping(src_pcs, src_projs, ref_proj, ref_depth)
+    aligned_pcs = homo_warping(
+        src_pcs,
+        src_projs,
+        ref_proj,
+        ref_depth,
+        ref_inv_proj=ref_inv_proj,
+    )
 
     x_2 = (ref_pc[:, 0] - aligned_pcs[:, 0])**2
     y_2 = (ref_pc[:, 1] - aligned_pcs[:, 1])**2
     z_2 = (ref_pc[:, 2] - aligned_pcs[:, 2])**2
-    dist = torch.sqrt(x_2 + y_2 + z_2).unsqueeze(1)
+    dist_sq = (x_2 + y_2 + z_2).unsqueeze(1)
 
-    return ref_pc, aligned_pcs, dist
+    return ref_pc, aligned_pcs, dist_sq
 
 
 def write_ply(file: Path, points):
@@ -294,6 +320,8 @@ def open3d_filter(depths: torch.Tensor, projs: torch.Tensor, rgbs: torch.Tensor,
     with torch.no_grad():
         tot_frame = depths.shape[0]
         height, width = depths.shape[2], depths.shape[3]
+        dist_thresh_sq = dist_thresh * dist_thresh
+        inv_projs = torch.inverse(projs)
         points = []
 
         for i in range(tot_frame):
@@ -304,14 +332,16 @@ def open3d_filter(depths: torch.Tensor, projs: torch.Tensor, rgbs: torch.Tensor,
             j = 0
 
             while True:
-                ref_pc, pcs, dist = filter_depth(
+                ref_pc, pcs, dist_sq = filter_depth(
                     ref_depth=depths[i:i+1],
                     src_depths=depths[j:min(j+batch_size, tot_frame)],
                     ref_proj=projs[i:i+1],
-                    src_projs=projs[j:min(j+batch_size, tot_frame)]
+                    src_projs=projs[j:min(j+batch_size, tot_frame)],
+                    ref_inv_proj=inv_projs[i:i+1],
+                    src_inv_projs=inv_projs[j:min(j+batch_size, tot_frame)],
                 )
 
-                depth_mask = (dist < dist_thresh).float()
+                depth_mask = (dist_sq < dist_thresh_sq).float()
 
                 masks = depth_mask
 
