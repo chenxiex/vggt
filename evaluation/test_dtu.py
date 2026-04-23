@@ -8,12 +8,29 @@ from PIL import Image
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Optional
 from torch.multiprocessing.spawn import spawn
 
-from utils import load_model, predict, read_pfm, upsample_images, write_ply, open3d_filter
+from utils import load_model, predict, read_pfm, upsample_image, upsample_images, write_ply, open3d_filter
 
 logger = logging.getLogger(__name__)
+
+MAX_IO_WORKERS = max(1, min(8, os.cpu_count() or 1))
+MAX_UPSAMPLE_WORKERS = max(1, min(8, os.cpu_count() or 1))
+
+
+def _torch_load_cpu_maybe_mmap(file_path: Path):
+    # mmap=True enables lazy tensor storage loading on CPU, which is faster when we only consume a subset of keys.
+    try:
+        return torch.load(file_path, map_location=torch.device("cpu"), mmap=True)
+    except TypeError:
+        return torch.load(file_path, map_location=torch.device("cpu"))
+    except RuntimeError as exc:
+        if "mmap" in str(exc).lower():
+            return torch.load(file_path, map_location=torch.device("cpu"))
+        raise
 
 
 def configure_logging(level: int = logging.INFO):
@@ -38,10 +55,20 @@ def save_predictions(results_path: Path, scene_name: str, predictions, sample_no
 
 
 def load_predictions(results_path: Path, scene_name: str):
-    results = torch.load(
-        results_path/f"{scene_name}.pt", map_location=torch.device("cpu"))
+    results = _torch_load_cpu_maybe_mmap(results_path/f"{scene_name}.pt")
     sample_no = results["sample_no"]
     predictions = results["predictions"]
+
+    if "depth" not in predictions or "depth_conf" not in predictions:
+        raise KeyError(
+            f"Prediction file {results_path / f'{scene_name}.pt'} must contain 'depth' and 'depth_conf'."
+        )
+
+    # Keep only the fields used by DTU evaluation to reduce memory pressure and downstream object traversal.
+    predictions = {
+        "depth": predictions["depth"],
+        "depth_conf": predictions["depth_conf"],
+    }
     return predictions, sample_no
 
 
@@ -56,11 +83,20 @@ def load_gt_depth(gt_depths_path: Path, sample_no: list[int]):
     sampled_gt_depth_paths = [gt_depths_path /
                               f"depth_map_{i:04}.pfm" for i in sample_no]
 
-    gt_depth = []
+    if len(sampled_gt_depth_paths) <= 1:
+        gt_depth = []
+        for gt_depth_path in sampled_gt_depth_paths:
+            data, scale = read_pfm(gt_depth_path)
+            gt_depth.append(data * scale)
+    else:
+        def _read_scaled_depth(gt_depth_path: Path):
+            data, scale = read_pfm(gt_depth_path)
+            return data * scale
 
-    for gt_depth_path in sampled_gt_depth_paths:
-        data, scale = read_pfm(gt_depth_path)
-        gt_depth.append(data*scale)
+        with ThreadPoolExecutor(
+            max_workers=min(MAX_IO_WORKERS, len(sampled_gt_depth_paths))
+        ) as executor:
+            gt_depth = list(executor.map(_read_scaled_depth, sampled_gt_depth_paths))
 
     gt_depth = torch.from_numpy(np.stack(gt_depth, axis=0)).float()
     return gt_depth
@@ -128,11 +164,14 @@ def align_pred_to_gt(
 
 
 def parse_cam(cam_file: Path):
-    cam_txt = open(cam_file).readlines()
-    def f(xs): return list(map(lambda x: list(map(float, x.strip().split())), xs))
+    with open(cam_file, "r", encoding="utf-8") as fp:
+        cam_txt = fp.readlines()
 
-    extr_mat = f(cam_txt[1:5])
-    intr_mat = f(cam_txt[7:10])
+    def _parse_rows(xs):
+        return list(map(lambda x: list(map(float, x.strip().split())), xs))
+
+    extr_mat = _parse_rows(cam_txt[1:5])
+    intr_mat = _parse_rows(cam_txt[7:10])
 
     extr_mat = np.array(extr_mat, np.float32)
     intr_mat = np.array(intr_mat, np.float32)
@@ -141,24 +180,24 @@ def parse_cam(cam_file: Path):
 
 
 def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
-
-    projs = []
-    rgbs = []
-
-    for view in sample_no:
-        img_file = dtu_test_1200_path / \
-            f"Rectified/{scene_name}/rect_{view+1:03d}_3_r5000.png"
-        cam_file = dtu_test_1200_path/f"Cameras/{view:08}_cam.txt"
+    def _load_single_view(view: int):
+        img_file = dtu_test_1200_path / f"Rectified/{scene_name}/rect_{view + 1:03d}_3_r5000.png"
+        cam_file = dtu_test_1200_path / f"Cameras/{view:08}_cam.txt"
 
         extr_mat, intr_mat = parse_cam(cam_file)
         proj_mat = np.eye(4)
         proj_mat[:3, :4] = intr_mat[:3, :3] @ extr_mat[:3, :4]
-        projs.append(torch.from_numpy(proj_mat))
-
         rgb = np.array(Image.open(img_file))
-        rgbs.append(rgb)
+        return torch.from_numpy(proj_mat), rgb
 
-    projs = torch.stack(projs).float()
+    if len(sample_no) <= 1:
+        loaded = [_load_single_view(view) for view in sample_no]
+    else:
+        with ThreadPoolExecutor(max_workers=min(MAX_IO_WORKERS, len(sample_no))) as executor:
+            loaded = list(executor.map(_load_single_view, sample_no))
+
+    proj_list, rgbs = zip(*loaded)
+    projs = torch.stack(list(proj_list)).float()
 
     # 归一化，维度从[H, W, C]调整为[C, H, W]
     rgb_tensors = [torch.from_numpy(img.astype(np.float32) / 255.).permute(2, 0, 1)
@@ -166,6 +205,19 @@ def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
     rgbs = torch.stack(rgb_tensors)           # (B,3,H,W)
 
     return projs, rgbs
+
+
+def upsample_images_parallel(images: torch.Tensor, target_w: int, target_h: int) -> torch.Tensor:
+    num_images = int(images.shape[0])
+    max_workers = min(MAX_UPSAMPLE_WORKERS, num_images)
+    if max_workers <= 1:
+        return upsample_images(images, target_w, target_h)
+
+    upsample_one = partial(upsample_image, target_w=target_w, target_h=target_h)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        upsampled_images = list(executor.map(upsample_one, images))
+
+    return torch.stack(upsampled_images, dim=0)
 
 
 def build_scene_names(dtu_test_1200_path: Path, scans: Optional[str]) -> list[str]:
@@ -258,9 +310,9 @@ def process_scene(
     gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
     depths = predictions['depth'][0]
     conf = predictions['depth_conf'][0]
-    upsampled_pred_depth = upsample_images(
+    upsampled_pred_depth = upsample_images_parallel(
         depths, gt_depth_w, gt_depth_h)
-    upsampled_depth_conf = upsample_images(
+    upsampled_depth_conf = upsample_images_parallel(
         conf, gt_depth_w, gt_depth_h)
 
     valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
