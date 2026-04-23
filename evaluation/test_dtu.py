@@ -103,68 +103,62 @@ def load_gt_depth(gt_depths_path: Path, sample_no: list[int]):
 
 
 def align_pred_to_gt(
-    pred_depth: torch.Tensor,
-    gt_depth: torch.Tensor,
-    valid_mask: torch.Tensor,
+    pred_depth: np.ndarray,
+    gt_depth: np.ndarray,
+    valid_mask: np.ndarray,
     min_valid_pixels: int = 100,
 ):
     """
-    Aligns predicted depth to ground truth with scale and shift using torch least squares.
-    The alignment is: gt_depth ≈ scale * pred_depth + shift.
+    Aligns a predicted depth map to a ground truth depth map using scale and shift.
+    The alignment is: gt_aligned_to_pred ≈ scale * pred_depth + shift.
 
     Args:
-        pred_depth (torch.Tensor): Flattened predicted depth values.
-        gt_depth (torch.Tensor): Flattened ground-truth depth values.
-        valid_mask (torch.Tensor): Boolean valid-pixel mask.
+        pred_depth (np.ndarray): The HxW predicted depth map.
+        gt_depth (np.ndarray): The HxW ground truth depth map.
+        valid_mask: (np.ndarray): A boolean mask of the valid pixels in the depth maps.
         min_valid_pixels (int): The minimum number of valid pixels required for alignment.
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor]:
-            - scale (torch.Tensor): Scalar scale factor. (NaN if alignment failed)
-            - shift (torch.Tensor): Scalar shift offset. (NaN if alignment failed)
+        tuple[float, float, np.ndarray]:
+            - scale (float): The calculated scale factor. (NaN if alignment failed)
+            - shift (float): The calculated shift offset. (NaN if alignment failed)
     """
     if pred_depth.shape != gt_depth.shape:
         raise ValueError(
             f"Predicted depth shape {pred_depth.shape} must match GT depth shape {gt_depth.shape}"
         )
 
-    if gt_depth.device != pred_depth.device:
-        gt_depth = gt_depth.to(pred_depth.device)
-    if valid_mask.device != pred_depth.device:
-        valid_mask = valid_mask.to(pred_depth.device)
-    valid_mask = valid_mask.bool()
-
     # Extract valid depth values
     gt_masked = gt_depth[valid_mask]
     pred_masked = pred_depth[valid_mask]
 
-    if gt_masked.numel() < min_valid_pixels:
+    if len(gt_masked) < min_valid_pixels:
         logger.warning(
-            f"Warning: Not enough valid pixels ({gt_masked.numel()} < {min_valid_pixels}) to align. "
+            f"Warning: Not enough valid pixels ({len(gt_masked)} < {min_valid_pixels}) to align. "
             "Using all pixels."
         )
         gt_masked = gt_depth.reshape(-1)
         pred_masked = pred_depth.reshape(-1)
 
     # Handle case where pred_masked has no variance (e.g., all zeros or a constant value)
-    if torch.std(pred_masked, unbiased=False) < 1e-6:
+    if np.std(pred_masked) < 1e-6:  # Small epsilon to check for near-constant values
         logger.warning(
             "Warning: Predicted depth values in the valid mask have near-zero variance. "
             "Scale is ill-defined. Setting scale=1 and solving for shift only."
         )
-        scale = pred_masked.new_tensor(1.0)
-        shift = torch.mean(gt_masked) - torch.mean(pred_masked)
+        scale = 1.0
+        # or np.median(gt_masked) - np.median(pred_masked)
+        shift = np.mean(gt_masked) - np.mean(pred_masked)
     else:
-        a_mat = torch.stack([pred_masked, torch.ones_like(pred_masked)], dim=1)
-        b_vec = gt_masked.unsqueeze(1)
+        A = np.vstack([pred_masked, np.ones_like(pred_masked)]).T
         try:
-            solution = torch.linalg.lstsq(a_mat, b_vec).solution.squeeze(1)
-            scale, shift = solution[0], solution[1]
-        except RuntimeError as e:
+            x, residuals, rank, s_values = np.linalg.lstsq(
+                A, gt_masked, rcond=None)
+            scale, shift = x[0], x[1]
+        except np.linalg.LinAlgError as e:
             logger.warning(
                 f"Warning: Least squares alignment failed ({e}). Returning original prediction.")
-            nan = pred_depth.new_tensor(float("nan"))
-            return nan, nan
+            return np.nan, np.nan
 
     return scale, shift
 
@@ -327,11 +321,14 @@ def process_scene(
     align_depth_map = upsampled_pred_depth.reshape(-1)
     align_gt_depth = gt_depth.reshape(-1)
 
-    scale, shift = align_pred_to_gt(
-        align_depth_map,
-        align_gt_depth,
-        align_mask,
+    scale_val, shift_val = align_pred_to_gt(
+        align_depth_map.cpu().numpy(),
+        align_gt_depth.cpu().numpy(),
+        align_mask.cpu().numpy()
     )
+
+    scale = torch.tensor(scale_val, dtype=torch.float32)
+    shift = torch.tensor(shift_val, dtype=torch.float32)
 
     aligned_upsampled_depth = upsampled_pred_depth * scale + shift
     depths = aligned_upsampled_depth * (upsampled_depth_conf > 3)
