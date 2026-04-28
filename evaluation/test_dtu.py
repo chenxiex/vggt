@@ -14,6 +14,7 @@ from typing import Optional
 from torch.multiprocessing.spawn import spawn
 
 from utils import load_model, predict, read_pfm, upsample_image, upsample_images, write_ply, open3d_filter
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,8 @@ def load_predictions(results_path: Path, scene_name: str):
         "depth": predictions["depth"],
         "depth_conf": predictions["depth_conf"],
     }
+    if "pose_enc" in results["predictions"]:
+        predictions["pose_enc"] = results["predictions"]["pose_enc"]
     return predictions, sample_no
 
 
@@ -177,6 +180,69 @@ def parse_cam(cam_file: Path):
     intr_mat = np.array(intr_mat, np.float32)
 
     return extr_mat, intr_mat
+
+
+def decode_pred_extrinsics(predictions: dict) -> torch.Tensor:
+    if "pose_enc" not in predictions:
+        raise KeyError(
+            "Prediction file does not contain 'pose_enc'. Re-run prediction to use camera-based alignment."
+        )
+
+    image_hw = tuple(predictions["depth"].shape[-2:])
+    pred_extrinsic, _ = pose_encoding_to_extri_intri(predictions["pose_enc"], image_hw)
+    return pred_extrinsic[0].detach().cpu().float()
+
+
+def load_gt_extrinsics(dtu_test_1200_path: Path, sample_no: list[int]) -> torch.Tensor:
+    extrinsics = []
+    for view in sample_no:
+        cam_file = dtu_test_1200_path / f"Cameras/{view:08}_cam.txt"
+        extr_mat, _ = parse_cam(cam_file)
+        extrinsics.append(torch.from_numpy(extr_mat[:3, :4]).float())
+    return torch.stack(extrinsics, dim=0)
+
+
+def camera_centers_from_extrinsics(extrinsics: torch.Tensor) -> torch.Tensor:
+    rot = extrinsics[:, :3, :3]
+    trans = extrinsics[:, :3, 3]
+    return -torch.matmul(rot.transpose(1, 2), trans.unsqueeze(-1)).squeeze(-1)
+
+
+def estimate_depth_scale_from_cameras(
+    pred_extrinsics: torch.Tensor,
+    gt_extrinsics: torch.Tensor,
+    min_valid_pairs: int = 10,
+    eps: float = 1e-6,
+) -> float:
+    if pred_extrinsics.shape != gt_extrinsics.shape:
+        raise ValueError(
+            f"Predicted extrinsics shape {pred_extrinsics.shape} must match GT extrinsics shape {gt_extrinsics.shape}"
+        )
+
+    pred_centers = camera_centers_from_extrinsics(pred_extrinsics)
+    gt_centers = camera_centers_from_extrinsics(gt_extrinsics)
+
+    pred_dist = torch.pdist(pred_centers)
+    gt_dist = torch.pdist(gt_centers)
+    valid = pred_dist > eps
+
+    if int(valid.sum().item()) < min_valid_pairs:
+        raise ValueError(
+            f"Not enough valid camera pairs for scale estimation ({int(valid.sum().item())} < {min_valid_pairs})."
+        )
+
+    scale = torch.median(gt_dist[valid] / pred_dist[valid]).item()
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError(f"Estimated an invalid camera scale: {scale}")
+
+    return scale
+
+
+def load_target_hw(dtu_test_1200_path: Path, scene_name: str, view: int) -> tuple[int, int]:
+    img_file = dtu_test_1200_path / f"Rectified/{scene_name}/rect_{view + 1:03d}_3_r5000.png"
+    with Image.open(img_file) as img:
+        width, height = img.size
+    return height, width
 
 
 def load_data(dtu_test_1200_path: Path, scene_name: str, sample_no: list[int]):
@@ -303,34 +369,42 @@ def process_scene(
     if args.pred_only:
         return
 
-    # 对齐
-    logger.info("%s Aligning predicted depth maps to ground truth...", worker_tag)
-    gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
-    gt_depth = load_gt_depth(gt_depths_path, sample_no)
-    gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
     depths = predictions['depth'][0]
     conf = predictions['depth_conf'][0]
-    upsampled_pred_depth = upsample_images_parallel(
-        depths, gt_depth_w, gt_depth_h)
-    upsampled_depth_conf = upsample_images_parallel(
-        conf, gt_depth_w, gt_depth_h)
+    target_h, target_w = load_target_hw(args.dtu_test_1200_path, scene_name, sample_no[0])
+    upsampled_pred_depth = upsample_images_parallel(depths, target_h, target_w)
+    upsampled_depth_conf = upsample_images_parallel(conf, target_h, target_w)
 
-    valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
+    if args.alignment_source == "gt_depth":
+        logger.info("%s Aligning predicted depth maps to ground truth depth...", worker_tag)
+        gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
+        gt_depth = load_gt_depth(gt_depths_path, sample_no)
+        valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
 
-    align_mask = valid_mask.reshape(-1)
-    align_depth_map = upsampled_pred_depth.reshape(-1)
-    align_gt_depth = gt_depth.reshape(-1)
+        align_mask = valid_mask.reshape(-1)
+        align_depth_map = upsampled_pred_depth.reshape(-1)
+        align_gt_depth = gt_depth.reshape(-1)
 
-    scale_val, shift_val = align_pred_to_gt(
-        align_depth_map.cpu().numpy(),
-        align_gt_depth.cpu().numpy(),
-        align_mask.cpu().numpy()
-    )
+        scale_val, shift_val = align_pred_to_gt(
+            align_depth_map.cpu().numpy(),
+            align_gt_depth.cpu().numpy(),
+            align_mask.cpu().numpy()
+        )
+        scale = torch.tensor(scale_val, dtype=torch.float32)
+        shift = torch.tensor(shift_val, dtype=torch.float32)
+        aligned_upsampled_depth = upsampled_pred_depth * scale + shift
+    elif args.alignment_source == "camera":
+        logger.info("%s Aligning predicted depth maps with predicted/GT cameras (scale only)...", worker_tag)
+        pred_extrinsics = decode_pred_extrinsics(predictions)
+        gt_extrinsics = load_gt_extrinsics(args.dtu_test_1200_path, sample_no)
+        scale_val = estimate_depth_scale_from_cameras(pred_extrinsics, gt_extrinsics)
+        logger.info("%s Camera-based depth scale: %.6f", worker_tag, scale_val)
+        scale = torch.tensor(scale_val, dtype=torch.float32)
+        aligned_upsampled_depth = upsampled_pred_depth * scale
+    else:
+        logger.info("%s Skipping depth alignment.", worker_tag)
+        aligned_upsampled_depth = upsampled_pred_depth
 
-    scale = torch.tensor(scale_val, dtype=torch.float32)
-    shift = torch.tensor(shift_val, dtype=torch.float32)
-
-    aligned_upsampled_depth = upsampled_pred_depth * scale + shift
     depths = aligned_upsampled_depth * (upsampled_depth_conf > 3)
     depths = depths.unsqueeze(1)
 
@@ -408,7 +482,7 @@ if __name__ == "__main__":
     parser.add_argument("--dtu_test_1200_path", type=Path,
                         required=True, help="Path to the DTU testing dataset")
     parser.add_argument("--dtu_depths_path", type=Path,
-                        required=True, help="Path to the DTU raw depth maps")
+                        required=False, help="Path to the DTU raw depth maps")
     parser.add_argument("--results_path", type=Path, required=True,
                         help="Path to save the DTU testing results")
     parser.add_argument("--model_path", type=Path,
@@ -419,6 +493,13 @@ if __name__ == "__main__":
                         help="If set, skip prediction and only load existing predictions")
     parser.add_argument("--pred_only", action="store_true",
                         help="If set, only perform prediction without alignment and fusion")
+    parser.add_argument(
+        "--alignment_source",
+        type=str,
+        choices=["gt_depth", "camera", "none"],
+        default="gt_depth",
+        help="How to align predicted depth before fusion. 'camera' uses pred/gt cameras to estimate a global depth scale without GT depth.",
+    )
     parser.add_argument('--scans', type=str, default=None,
                         help="Scene ID numbers to evaluate (e.g., 1,2,3). If not provided or set to 'true', will evaluate all scenes in the scan list.")
     parser.add_argument('--gpu_ids', type=str, default=None,
@@ -434,6 +515,11 @@ if __name__ == "__main__":
     if not args.no_pred and not args.model_path:
         raise ValueError(
             "Model path must be provided if not skipping prediction.")
+
+    if not args.pred_only and args.alignment_source == "gt_depth" and args.dtu_depths_path is None:
+        raise ValueError(
+            "--dtu_depths_path is required when --alignment_source=gt_depth."
+        )
 
     if args.sample_size <= 0 or args.sample_size > 49:
         raise ValueError("sample_size must be in [1, 49].")
