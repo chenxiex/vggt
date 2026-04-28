@@ -343,7 +343,7 @@ def process_scene(
         projs = projs.to(fusion_device, non_blocking=True)
         rgbs = rgbs.to(fusion_device, non_blocking=True)
     points = open3d_filter(depths, projs, rgbs,
-                        dist_thresh=1.0, batch_size=20, num_consist=4)
+                        dist_thresh=args.dist_thresh, batch_size=args.fusion_batch_size, num_consist=args.num_consist)
     write_ply(args.results_path /
             f"{int(scene_name[4:]):03d}.ply", points)
     logger.info("%s Finished processing %s, written to %03d.ply",
@@ -420,6 +420,12 @@ if __name__ == "__main__":
                         help="Comma-separated GPU ids for scene-level parallelism (e.g., 0,1,2). Default is 'auto' (all visible GPUs).")
     parser.add_argument('--seed', type=int, default=42,
                         help="Random seed for deterministic per-scene image sampling.")
+    parser.add_argument('--dist_thresh', type=float, default=1.0,
+                        help="Distance threshold for point cloud fusion consistency check.")
+    parser.add_argument('--num_consist', type=int, default=4,
+                        help="Minimum number of consistent depth maps required to keep a point in fusion.")
+    parser.add_argument('--fusion_batch_size', type=int, default=20,
+                        help="Batch size for point cloud fusion to balance memory usage and speed.")
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:

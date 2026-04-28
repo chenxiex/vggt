@@ -152,3 +152,6 @@ data/
 # gradio
 .gradio/
 input_images_*/
+
+# Codex
+.codex
