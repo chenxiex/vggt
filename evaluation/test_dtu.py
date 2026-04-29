@@ -270,6 +270,27 @@ def parse_gpu_ids(gpu_ids_arg: Optional[str]) -> list[int]:
     return gpu_ids
 
 
+def limit_points_by_score(
+    points: np.ndarray,
+    scores: np.ndarray,
+    max_points: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if max_points <= 0 or points.shape[0] <= max_points:
+        return points, scores
+
+    if points.shape[0] != scores.shape[0]:
+        raise ValueError(
+            f"points and scores must have the same length, got {points.shape[0]} and {scores.shape[0]}"
+        )
+
+    rng = np.random.default_rng(seed)
+    tie_breakers = rng.permutation(points.shape[0])
+    order = np.lexsort((tie_breakers, -scores))
+    keep_indices = order[:max_points]
+    return points[keep_indices], scores[keep_indices]
+
+
 def split_scene_names(scene_names: list[str], num_workers: int) -> list[list[str]]:
     return [scene_names[i::num_workers] for i in range(num_workers)]
 
@@ -340,12 +361,36 @@ def process_scene(
         depths = depths.to(fusion_device, non_blocking=True)
         projs = projs.to(fusion_device, non_blocking=True)
         rgbs = rgbs.to(fusion_device, non_blocking=True)
-    points = open3d_filter(depths, projs, rgbs,
-                        dist_thresh=args.dist_thresh, batch_size=args.fusion_batch_size, num_consist=args.num_consist)
+        upsampled_depth_conf = upsampled_depth_conf.to(fusion_device, non_blocking=True)
+    points, point_scores = open3d_filter(
+        depths,
+        projs,
+        rgbs,
+        dist_thresh=args.dist_thresh,
+        batch_size=args.fusion_batch_size,
+        num_consist=args.num_consist,
+        score_maps=upsampled_depth_conf if args.point_score == "depth_conf" else None,
+        return_point_scores=True,
+    )
+    points_before_limit = int(points.shape[0])
+    points, point_scores = limit_points_by_score(
+        points,
+        point_scores,
+        max_points=args.max_points,
+        seed=args.subsample_seed,
+    )
     write_ply(args.results_path /
             f"{int(scene_name[4:]):03d}.ply", points)
-    logger.info("%s Finished processing %s, written to %03d.ply",
-                worker_tag, scene_name, int(scene_name[4:]))
+    logger.info(
+        "%s Finished processing %s, written to %03d.ply with %d/%d fused points (score=%s, max_points=%d)",
+        worker_tag,
+        scene_name,
+        int(scene_name[4:]),
+        int(points.shape[0]),
+        points_before_limit,
+        args.point_score,
+        args.max_points,
+    )
 
 
 def run_worker(
@@ -424,6 +469,12 @@ if __name__ == "__main__":
                         help="Minimum number of consistent depth maps required to keep a point in fusion.")
     parser.add_argument('--fusion_batch_size', type=int, default=20,
                         help="Batch size for point cloud fusion to balance memory usage and speed.")
+    parser.add_argument('--max_points', type=int, default=0,
+                        help="Maximum number of fused points to write per scan. <=0 keeps all points.")
+    parser.add_argument('--point_score', type=str, default="depth_conf", choices=["depth_conf"],
+                        help="Point ranking signal used when --max_points limits the output.")
+    parser.add_argument('--subsample_seed', type=int, default=42,
+                        help="Seed used to break ties deterministically when limiting fused points.")
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:

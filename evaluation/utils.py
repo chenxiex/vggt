@@ -316,13 +316,37 @@ def extract_points(pc, mask, rgb):
     return points_with_color
 
 
-def open3d_filter(depths: torch.Tensor, projs: torch.Tensor, rgbs: torch.Tensor, dist_thresh: float = 1.0, batch_size: int = 20, num_consist: int = 4):
+def extract_masked_values(values, mask):
+    values = values.cpu().numpy().reshape(-1)
+    mask = mask.cpu().numpy().reshape(-1)
+    return values[np.where(mask)]
+
+
+def open3d_filter(
+    depths: torch.Tensor,
+    projs: torch.Tensor,
+    rgbs: torch.Tensor,
+    dist_thresh: float = 1.0,
+    batch_size: int = 20,
+    num_consist: int = 4,
+    score_maps: torch.Tensor | None = None,
+    return_point_scores: bool = False,
+):
     with torch.no_grad():
         tot_frame = depths.shape[0]
         height, width = depths.shape[2], depths.shape[3]
         dist_thresh_sq = dist_thresh * dist_thresh
         inv_projs = torch.inverse(projs)
         points = []
+        point_scores = [] if return_point_scores else None
+
+        if return_point_scores:
+            if score_maps is None:
+                raise ValueError("score_maps must be provided when return_point_scores=True.")
+            if score_maps.shape != (tot_frame, height, width):
+                raise ValueError(
+                    f"score_maps must have shape {(tot_frame, height, width)}, got {tuple(score_maps.shape)}"
+                )
 
         for i in range(tot_frame):
             pc_buff = torch.zeros((3, height, width),
@@ -358,6 +382,12 @@ def open3d_filter(depths: torch.Tensor, projs: torch.Tensor, rgbs: torch.Tensor,
 
             final_pc = extract_points(avg_points, final_mask, rgbs[i])
             points.append(final_pc)
+            if return_point_scores:
+                point_scores.append(extract_masked_values(score_maps[i], final_mask))
 
         points = np.concatenate(points, axis=0)
-        return points
+        if not return_point_scores:
+            return points
+
+        point_scores = np.concatenate(point_scores, axis=0).astype(np.float32, copy=False)
+        return points, point_scores
