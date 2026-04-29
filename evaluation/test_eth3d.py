@@ -397,7 +397,12 @@ def build_point_cloud(
     conf = world_points_conf.reshape(-1)
     colors = np.clip(np.rint(images.reshape(-1, 3) * 255.0), 0, 255).astype(np.uint8)
 
-    valid_mask = np.isfinite(points).all(axis=1) & np.isfinite(conf) & (conf >= conf_threshold)
+    finite_conf_mask = np.isfinite(conf)
+    finite_conf = conf[finite_conf_mask]
+    if finite_conf.size == 0:
+        raise RuntimeError("world_points_conf does not contain any finite values")
+
+    valid_mask = np.isfinite(points).all(axis=1) & finite_conf_mask & (conf >= conf_threshold)
     kept_indices = np.flatnonzero(valid_mask)
     if kept_indices.size == 0:
         raise RuntimeError(f"No points survived confidence filtering at threshold {conf_threshold}")
@@ -412,6 +417,13 @@ def build_point_cloud(
         "num_points_after_filtering": int(valid_mask.sum()),
         "num_points_written": int(point_cloud.shape[0]),
         "confidence_threshold": float(conf_threshold),
+        "confidence_min": float(np.min(finite_conf)),
+        "confidence_max": float(np.max(finite_conf)),
+        "confidence_median": float(np.median(finite_conf)),
+        "confidence_mean": float(np.mean(finite_conf)),
+        "confidence_std": float(np.std(finite_conf)),
+        "num_finite_confidences": int(finite_conf.size),
+        "num_confidences_above_threshold": int(np.count_nonzero(finite_conf >= conf_threshold)),
     }
     return point_cloud, stats
 
@@ -458,6 +470,23 @@ def process_scene(args: argparse.Namespace, scene_dir: Path, model) -> None:
         conf_threshold=args.conf_threshold,
         max_points=args.max_points,
         seed=args.seed + sum(ord(ch) for ch in scene_name),
+    )
+    logger.info(
+        (
+            "Scene %s points conf stats: min=%.4f, max=%.4f, median=%.4f, "
+            "mean=%.4f, std=%.4f, finite=%d, kept>=%0.4f: %d/%d, written=%d"
+        ),
+        scene_name,
+        point_stats["confidence_min"],
+        point_stats["confidence_max"],
+        point_stats["confidence_median"],
+        point_stats["confidence_mean"],
+        point_stats["confidence_std"],
+        point_stats["num_finite_confidences"],
+        point_stats["confidence_threshold"],
+        point_stats["num_confidences_above_threshold"],
+        point_stats["num_points_before_filtering"],
+        point_stats["num_points_written"],
     )
     write_ply(raw_ply_file, point_cloud)
 
