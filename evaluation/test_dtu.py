@@ -361,7 +361,6 @@ def process_scene(
         depths = depths.to(fusion_device, non_blocking=True)
         projs = projs.to(fusion_device, non_blocking=True)
         rgbs = rgbs.to(fusion_device, non_blocking=True)
-        upsampled_depth_conf = upsampled_depth_conf.to(fusion_device, non_blocking=True)
     points, point_scores = open3d_filter(
         depths,
         projs,
@@ -369,7 +368,6 @@ def process_scene(
         dist_thresh=args.dist_thresh,
         batch_size=args.fusion_batch_size,
         num_consist=args.num_consist,
-        score_maps=upsampled_depth_conf if args.point_score == "depth_conf" else None,
         return_point_scores=True,
     )
     points_before_limit = int(points.shape[0])
@@ -471,8 +469,8 @@ if __name__ == "__main__":
                         help="Batch size for point cloud fusion to balance memory usage and speed.")
     parser.add_argument('--max_points', type=int, default=0,
                         help="Maximum number of fused points to write per scan. <=0 keeps all points.")
-    parser.add_argument('--point_score', type=str, default="depth_conf", choices=["depth_conf"],
-                        help="Point ranking signal used when --max_points limits the output.")
+    parser.add_argument('--point_score', type=str, default="consistency_dist", choices=["consistency_dist"],
+                        help="Point ranking signal used when --max_points limits the output. consistency_dist ranks by consistent-view count first, then average geometric error.")
     parser.add_argument('--subsample_seed', type=int, default=42,
                         help="Seed used to break ties deterministically when limiting fused points.")
     args = parser.parse_args()

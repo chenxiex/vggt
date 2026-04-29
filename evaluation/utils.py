@@ -329,7 +329,6 @@ def open3d_filter(
     dist_thresh: float = 1.0,
     batch_size: int = 20,
     num_consist: int = 4,
-    score_maps: torch.Tensor | None = None,
     return_point_scores: bool = False,
 ):
     with torch.no_grad():
@@ -340,19 +339,13 @@ def open3d_filter(
         points = []
         point_scores = [] if return_point_scores else None
 
-        if return_point_scores:
-            if score_maps is None:
-                raise ValueError("score_maps must be provided when return_point_scores=True.")
-            if score_maps.shape != (tot_frame, height, width):
-                raise ValueError(
-                    f"score_maps must have shape {(tot_frame, height, width)}, got {tuple(score_maps.shape)}"
-                )
-
         for i in range(tot_frame):
             pc_buff = torch.zeros((3, height, width),
                                   device=depths.device, dtype=depths.dtype)
             val_cnt = torch.zeros((1, height, width),
                                   device=depths.device, dtype=depths.dtype)
+            dist_sum = torch.zeros((1, height, width),
+                                   device=depths.device, dtype=depths.dtype)
             j = 0
 
             while True:
@@ -372,6 +365,7 @@ def open3d_filter(
                 masked_pc = pcs * masks
                 pc_buff += masked_pc.sum(dim=0, keepdim=False)
                 val_cnt += masks.sum(dim=0, keepdim=False)
+                dist_sum += (dist_sq * masks).sum(dim=0, keepdim=False)
 
                 j += batch_size
                 if j >= tot_frame:
@@ -383,7 +377,10 @@ def open3d_filter(
             final_pc = extract_points(avg_points, final_mask, rgbs[i])
             points.append(final_pc)
             if return_point_scores:
-                point_scores.append(extract_masked_values(score_maps[i], final_mask))
+                avg_dist = torch.div(dist_sum, val_cnt.clamp_min(1.0))
+                dist_quality = (1.0 - avg_dist / dist_thresh_sq).clamp(min=0.0, max=1.0)
+                score_map = val_cnt + dist_quality
+                point_scores.append(extract_masked_values(score_map.squeeze(0), final_mask))
 
         points = np.concatenate(points, axis=0)
         if not return_point_scores:
