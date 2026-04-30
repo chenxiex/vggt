@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Optional
 from torch.multiprocessing.spawn import spawn
+import torch.nn.functional as F
 
 from utils import load_model, predict, read_pfm, upsample_image, upsample_images, write_ply, open3d_filter
 
@@ -218,6 +219,20 @@ def upsample_images_parallel(images: torch.Tensor, target_w: int, target_h: int)
     return torch.stack(upsampled_images, dim=0)
 
 
+def scale_proj_matrices(projs: torch.Tensor, scale_x: float, scale_y: float) -> torch.Tensor:
+    if scale_x <= 0 or scale_y <= 0:
+        raise ValueError(f"scale_x and scale_y must be positive, got {scale_x} and {scale_y}")
+
+    scaled_projs = projs.clone()
+    scaled_projs[:, 0, :] *= scale_x
+    scaled_projs[:, 1, :] *= scale_y
+    return scaled_projs
+
+
+def resize_rgb_images(images: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
+    return F.interpolate(images, size=(target_h, target_w), mode="bilinear", align_corners=False)
+
+
 def build_scene_names(dtu_test_1200_path: Path, scans: Optional[str]) -> list[str]:
     if not scans or scans.lower() == "true":
         with open(dtu_test_1200_path/"scan_list_test.txt") as f:
@@ -350,12 +365,12 @@ def process_scene(
     gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
     gt_depth = load_gt_depth(gt_depths_path, sample_no)
     gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
-    depths = predictions['depth'][0]
-    conf = predictions['depth_conf'][0]
+    lowres_depths = predictions['depth'][0]
+    lowres_conf = predictions['depth_conf'][0]
     upsampled_pred_depth = upsample_images_parallel(
-        depths, gt_depth_w, gt_depth_h)
+        lowres_depths, gt_depth_w, gt_depth_h)
     upsampled_depth_conf = upsample_images_parallel(
-        conf, gt_depth_w, gt_depth_h)
+        lowres_conf, gt_depth_w, gt_depth_h)
 
     valid_mask = (gt_depth > 1e-3) & (upsampled_depth_conf > 3)
 
@@ -373,12 +388,24 @@ def process_scene(
     shift = torch.tensor(shift_val, dtype=torch.float32)
 
     aligned_upsampled_depth = upsampled_pred_depth * scale + shift
-    depths = aligned_upsampled_depth * (upsampled_depth_conf > 3)
-    depths = depths.unsqueeze(1)
 
     # 点云融合
     logger.info("%s Fusing depth maps into point cloud and saving results...", worker_tag)
     projs, rgbs = load_data(args.dtu_test_1200_path, scene_name, sample_no)
+    if args.upsample_align_only:
+        depth_h, depth_w = lowres_depths.shape[-2:]
+        rgb_h, rgb_w = rgbs.shape[-2:]
+        scale_y = depth_h / rgb_h
+        scale_x = depth_w / rgb_w
+
+        depths = (lowres_depths * scale + shift) * (lowres_conf > 3)
+        depths = depths.unsqueeze(1)
+        projs = scale_proj_matrices(projs, scale_x=scale_x, scale_y=scale_y)
+        rgbs = resize_rgb_images(rgbs, depth_h, depth_w)
+    else:
+        depths = aligned_upsampled_depth * (upsampled_depth_conf > 3)
+        depths = depths.unsqueeze(1)
+
     if torch.cuda.is_available():
         fusion_device = torch.device("cuda", torch.cuda.current_device())
         depths = depths.to(fusion_device, non_blocking=True)
@@ -490,6 +517,11 @@ if __name__ == "__main__":
                         help="Batch size for point cloud fusion to balance memory usage and speed.")
     parser.add_argument('--voxel_size', type=float, default=0.0,
                         help="Voxel size for uniform point-cloud downsampling after fusion. <=0 disables voxel downsampling.")
+    parser.add_argument(
+        '--upsample_align_only',
+        action='store_true',
+        help="Use upsampled depth only for GT alignment; keep fusion on the native prediction resolution and scale camera intrinsics accordingly.",
+    )
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:
