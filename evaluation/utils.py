@@ -289,37 +289,25 @@ def filter_depth(
 
 
 def write_ply(file: Path, points):
+    if isinstance(points, torch.Tensor):
+        points = points.detach().cpu().numpy()
+
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points[:, :3])
     pcd.colors = o3d.utility.Vector3dVector(points[:, 3:] / 255.)
     o3d.io.write_point_cloud(file, pcd, write_ascii=False)
 
 
-def extract_points(pc, mask, rgb):
-    pc = pc.cpu()
-    mask = mask.cpu()
-    rgb = rgb.cpu()
-
-    pc = pc.numpy()
-    mask = mask.numpy()
-    rgb = rgb.numpy()
-
-    mask = np.reshape(mask, (-1,))
-    pc = np.reshape(pc, (-1, 3))
-    rgb = np.reshape(rgb, (-1, 3))
-
-    points = pc[np.where(mask)]
-    colors = rgb[np.where(mask)]
-
-    points_with_color = np.concatenate([points, colors], axis=1)
-
-    return points_with_color
+def extract_points_tensor(pc: torch.Tensor, mask: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
+    flat_mask = mask.reshape(-1)
+    flat_pc = pc.reshape(-1, 3)
+    flat_rgb = rgb.permute(1, 2, 0).reshape(-1, 3)
+    keep_indices = flat_mask.nonzero(as_tuple=False).squeeze(1)
+    return torch.cat([flat_pc.index_select(0, keep_indices), flat_rgb.index_select(0, keep_indices)], dim=1)
 
 
-def extract_masked_values(values, mask):
-    values = values.cpu().numpy().reshape(-1)
-    mask = mask.cpu().numpy().reshape(-1)
-    return values[np.where(mask)]
+def extract_masked_values_tensor(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    return values.reshape(-1)[mask.reshape(-1)]
 
 
 def open3d_filter(
@@ -372,19 +360,25 @@ def open3d_filter(
                     break
 
             final_mask = (val_cnt >= num_consist).squeeze(0)
-            avg_points = torch.div(pc_buff, val_cnt).permute(1, 2, 0)
+            avg_points = torch.div(pc_buff, val_cnt.clamp_min(1.0)).permute(1, 2, 0)
 
-            final_pc = extract_points(avg_points, final_mask, rgbs[i])
+            final_pc = extract_points_tensor(avg_points, final_mask, rgbs[i])
             points.append(final_pc)
             if return_point_scores:
                 avg_dist = torch.div(dist_sum, val_cnt.clamp_min(1.0))
                 dist_quality = (1.0 - avg_dist / dist_thresh_sq).clamp(min=0.0, max=1.0)
                 score_map = val_cnt + dist_quality
-                point_scores.append(extract_masked_values(score_map.squeeze(0), final_mask))
+                point_scores.append(extract_masked_values_tensor(score_map.squeeze(0), final_mask))
 
-        points = np.concatenate(points, axis=0)
+        if points:
+            points = torch.cat(points, dim=0)
+        else:
+            points = torch.empty((0, 6), device=depths.device, dtype=depths.dtype)
         if not return_point_scores:
             return points
 
-        point_scores = np.concatenate(point_scores, axis=0).astype(np.float32, copy=False)
+        if point_scores:
+            point_scores = torch.cat(point_scores, dim=0)
+        else:
+            point_scores = torch.empty((0,), device=depths.device, dtype=depths.dtype)
         return points, point_scores
