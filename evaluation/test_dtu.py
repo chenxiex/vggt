@@ -233,6 +233,22 @@ def resize_rgb_images(images: torch.Tensor, target_h: int, target_w: int) -> tor
     return F.interpolate(images, size=(target_h, target_w), mode="bilinear", align_corners=False)
 
 
+def normalize_depth_tensor(depths: torch.Tensor) -> torch.Tensor:
+    if depths.ndim == 4 and depths.shape[-1] == 1:
+        return depths.squeeze(-1)
+    if depths.ndim != 3:
+        raise ValueError(f"Expected depth tensor with shape (S,H,W) or (S,H,W,1), got {tuple(depths.shape)}")
+    return depths
+
+
+def normalize_conf_tensor(conf: torch.Tensor) -> torch.Tensor:
+    if conf.ndim == 4 and conf.shape[-1] == 1:
+        return conf.squeeze(-1)
+    if conf.ndim != 3:
+        raise ValueError(f"Expected confidence tensor with shape (S,H,W) or (S,H,W,1), got {tuple(conf.shape)}")
+    return conf
+
+
 def build_scene_names(dtu_test_1200_path: Path, scans: Optional[str]) -> list[str]:
     if not scans or scans.lower() == "true":
         with open(dtu_test_1200_path/"scan_list_test.txt") as f:
@@ -365,8 +381,8 @@ def process_scene(
     gt_depths_path = args.dtu_depths_path/"Depths"/scene_name
     gt_depth = load_gt_depth(gt_depths_path, sample_no)
     gt_depth_w, gt_depth_h = gt_depth[0].shape[:2]
-    lowres_depths = predictions['depth'][0]
-    lowres_conf = predictions['depth_conf'][0]
+    lowres_depths = normalize_depth_tensor(predictions['depth'][0])
+    lowres_conf = normalize_conf_tensor(predictions['depth_conf'][0])
     upsampled_pred_depth = upsample_images_parallel(
         lowres_depths, gt_depth_w, gt_depth_h)
     upsampled_depth_conf = upsample_images_parallel(
