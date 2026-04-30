@@ -301,50 +301,6 @@ def parse_gpu_ids(gpu_ids_arg: Optional[str]) -> list[int]:
     return gpu_ids
 
 
-def voxel_downsample_points(
-    points: torch.Tensor,
-    scores: torch.Tensor,
-    voxel_size: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if voxel_size <= 0 or points.shape[0] == 0:
-        return points, scores
-
-    if points.shape[0] != scores.shape[0]:
-        raise ValueError(
-            f"points and scores must have the same length, got {points.shape[0]} and {scores.shape[0]}"
-        )
-
-    xyz = points[:, :3]
-    min_xyz = torch.amin(xyz, dim=0, keepdim=True)
-    voxel_coords = torch.floor((xyz - min_xyz) / voxel_size).to(torch.int64)
-
-    _, inverse = torch.unique(voxel_coords, dim=0, return_inverse=True)
-    num_voxels = int(inverse.max().item()) + 1
-
-    best_scores = torch.full(
-        (num_voxels,),
-        torch.finfo(scores.dtype).min,
-        device=scores.device,
-        dtype=scores.dtype,
-    )
-    best_scores.scatter_reduce_(0, inverse, scores, reduce="amax", include_self=True)
-
-    point_indices = torch.arange(points.shape[0], device=points.device, dtype=torch.int64)
-    sentinel = torch.full_like(point_indices, points.shape[0])
-    candidate_indices = torch.where(scores == best_scores[inverse], point_indices, sentinel)
-
-    keep_indices = torch.full(
-        (num_voxels,),
-        points.shape[0],
-        device=points.device,
-        dtype=torch.int64,
-    )
-    keep_indices.scatter_reduce_(0, inverse, candidate_indices, reduce="amin", include_self=True)
-    keep_indices = keep_indices[keep_indices < points.shape[0]]
-
-    return points.index_select(0, keep_indices), scores.index_select(0, keep_indices)
-
-
 def split_scene_names(scene_names: list[str], num_workers: int) -> list[list[str]]:
     return [scene_names[i::num_workers] for i in range(num_workers)]
 
@@ -436,22 +392,14 @@ def process_scene(
         num_consist=args.num_consist,
         return_point_scores=True,
     )
-    points_before_downsample = int(points.shape[0])
-    points, point_scores = voxel_downsample_points(
-        points,
-        point_scores,
-        voxel_size=args.voxel_size,
-    )
     write_ply(args.results_path /
             f"{int(scene_name[4:]):03d}.ply", points)
     logger.info(
-        "%s Finished processing %s, written to %03d.ply with %d/%d fused points after voxel downsampling (voxel_size=%.6f)",
+        "%s Finished processing %s, written to %03d.ply with %d fused points",
         worker_tag,
         scene_name,
         int(scene_name[4:]),
         int(points.shape[0]),
-        points_before_downsample,
-        args.voxel_size,
     )
 
 
@@ -531,12 +479,11 @@ if __name__ == "__main__":
                         help="Minimum number of consistent depth maps required to keep a point in fusion.")
     parser.add_argument('--fusion_batch_size', type=int, default=20,
                         help="Batch size for point cloud fusion to balance memory usage and speed.")
-    parser.add_argument('--voxel_size', type=float, default=0.0,
-                        help="Voxel size for uniform point-cloud downsampling after fusion. <=0 disables voxel downsampling.")
     parser.add_argument(
         '--upsample_align_only',
-        action='store_true',
-        help="Use upsampled depth only for GT alignment; keep fusion on the native prediction resolution and scale camera intrinsics accordingly.",
+        action='store_false',
+        default=True,
+        help="Use upsampled depth only for GT alignment; keep fusion on the native prediction resolution and scale camera intrinsics accordingly. Enabled by default.",
     )
     args = parser.parse_args()
 
