@@ -270,13 +270,12 @@ def parse_gpu_ids(gpu_ids_arg: Optional[str]) -> list[int]:
     return gpu_ids
 
 
-def limit_points_by_score(
-    points: np.ndarray,
-    scores: np.ndarray,
-    max_points: int,
-    seed: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    if max_points <= 0 or points.shape[0] <= max_points:
+def voxel_downsample_points(
+    points: torch.Tensor,
+    scores: torch.Tensor,
+    voxel_size: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if voxel_size <= 0 or points.shape[0] == 0:
         return points, scores
 
     if points.shape[0] != scores.shape[0]:
@@ -284,11 +283,35 @@ def limit_points_by_score(
             f"points and scores must have the same length, got {points.shape[0]} and {scores.shape[0]}"
         )
 
-    rng = np.random.default_rng(seed)
-    tie_breakers = rng.permutation(points.shape[0])
-    order = np.lexsort((tie_breakers, -scores))
-    keep_indices = order[:max_points]
-    return points[keep_indices], scores[keep_indices]
+    xyz = points[:, :3]
+    min_xyz = torch.amin(xyz, dim=0, keepdim=True)
+    voxel_coords = torch.floor((xyz - min_xyz) / voxel_size).to(torch.int64)
+
+    _, inverse = torch.unique(voxel_coords, dim=0, return_inverse=True)
+    num_voxels = int(inverse.max().item()) + 1
+
+    best_scores = torch.full(
+        (num_voxels,),
+        torch.finfo(scores.dtype).min,
+        device=scores.device,
+        dtype=scores.dtype,
+    )
+    best_scores.scatter_reduce_(0, inverse, scores, reduce="amax", include_self=True)
+
+    point_indices = torch.arange(points.shape[0], device=points.device, dtype=torch.int64)
+    sentinel = torch.full_like(point_indices, points.shape[0])
+    candidate_indices = torch.where(scores == best_scores[inverse], point_indices, sentinel)
+
+    keep_indices = torch.full(
+        (num_voxels,),
+        points.shape[0],
+        device=points.device,
+        dtype=torch.int64,
+    )
+    keep_indices.scatter_reduce_(0, inverse, candidate_indices, reduce="amin", include_self=True)
+    keep_indices = keep_indices[keep_indices < points.shape[0]]
+
+    return points.index_select(0, keep_indices), scores.index_select(0, keep_indices)
 
 
 def split_scene_names(scene_names: list[str], num_workers: int) -> list[list[str]]:
@@ -370,24 +393,22 @@ def process_scene(
         num_consist=args.num_consist,
         return_point_scores=True,
     )
-    points_before_limit = int(points.shape[0])
-    points, point_scores = limit_points_by_score(
+    points_before_downsample = int(points.shape[0])
+    points, point_scores = voxel_downsample_points(
         points,
         point_scores,
-        max_points=args.max_points,
-        seed=args.subsample_seed,
+        voxel_size=args.voxel_size,
     )
     write_ply(args.results_path /
             f"{int(scene_name[4:]):03d}.ply", points)
     logger.info(
-        "%s Finished processing %s, written to %03d.ply with %d/%d fused points (score=%s, max_points=%d)",
+        "%s Finished processing %s, written to %03d.ply with %d/%d fused points after voxel downsampling (voxel_size=%.6f)",
         worker_tag,
         scene_name,
         int(scene_name[4:]),
         int(points.shape[0]),
-        points_before_limit,
-        args.point_score,
-        args.max_points,
+        points_before_downsample,
+        args.voxel_size,
     )
 
 
@@ -467,12 +488,8 @@ if __name__ == "__main__":
                         help="Minimum number of consistent depth maps required to keep a point in fusion.")
     parser.add_argument('--fusion_batch_size', type=int, default=20,
                         help="Batch size for point cloud fusion to balance memory usage and speed.")
-    parser.add_argument('--max_points', type=int, default=0,
-                        help="Maximum number of fused points to write per scan. <=0 keeps all points.")
-    parser.add_argument('--point_score', type=str, default="consistency_dist", choices=["consistency_dist"],
-                        help="Point ranking signal used when --max_points limits the output. consistency_dist ranks by consistent-view count first, then average geometric error.")
-    parser.add_argument('--subsample_seed', type=int, default=42,
-                        help="Seed used to break ties deterministically when limiting fused points.")
+    parser.add_argument('--voxel_size', type=float, default=0.0,
+                        help="Voxel size for uniform point-cloud downsampling after fusion. <=0 disables voxel downsampling.")
     args = parser.parse_args()
 
     if not args.no_pred and not args.model_path:
