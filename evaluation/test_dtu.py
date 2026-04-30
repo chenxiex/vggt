@@ -490,7 +490,7 @@ if __name__ == "__main__":
                         help="Batch size for point cloud fusion to balance memory usage and speed.")
     parser.add_argument(
         '--upsample_align_only',
-        action='store_false',
+        type=bool,
         default=True,
         help="Use upsampled depth only for GT alignment; keep fusion on the native prediction resolution and scale camera intrinsics accordingly. Enabled by default.",
     )
