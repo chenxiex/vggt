@@ -1,3 +1,6 @@
 [submodule "evaluation/DTUeval-python"]
 	path = evaluation/DTUeval-python
 	url = https://gh-proxy.org/https://github.com/chenxiex/DTUeval-python.git
+[submodule "evaluation/eth3d-multi-view-evaluation"]
+	path = evaluation/eth3d-multi-view-evaluation
+	url = https://gh-proxy.org/https://github.com/chenxiex/eth3d-multi-view-evaluation.git
