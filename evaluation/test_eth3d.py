@@ -23,17 +23,6 @@ def configure_logging(level: int = logging.INFO) -> None:
     )
 
 
-def _torch_load_cpu_maybe_mmap(file_path: Path):
-    try:
-        return torch.load(file_path, map_location=torch.device("cpu"), mmap=True)
-    except TypeError:
-        return torch.load(file_path, map_location=torch.device("cpu"))
-    except RuntimeError as exc:
-        if "mmap" in str(exc).lower():
-            return torch.load(file_path, map_location=torch.device("cpu"))
-        raise
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export VGGT ETH3D point clouds for official evaluation")
     parser.add_argument(
@@ -46,13 +35,13 @@ def parse_args() -> argparse.Namespace:
         "--results_path",
         type=Path,
         required=True,
-        help="Directory to save per-scene prediction caches, metadata, and PLY files",
+        help="Directory to save per-scene metadata and PLY files",
     )
     parser.add_argument(
         "--model_path",
         type=Path,
-        required=False,
-        help="Path to the VGGT checkpoint. Required unless --no_pred is set.",
+        required=True,
+        help="Path to the VGGT checkpoint.",
     )
     parser.add_argument(
         "--scenes",
@@ -78,16 +67,6 @@ def parse_args() -> argparse.Namespace:
         choices=["sim3", "rigid_first_frame", "none"],
         default="sim3",
         help="Alignment mode used to map predicted points to ETH3D world coordinates.",
-    )
-    parser.add_argument(
-        "--no_pred",
-        action="store_true",
-        help="Reuse saved per-scene predictions instead of running VGGT.",
-    )
-    parser.add_argument(
-        "--pred_only",
-        action="store_true",
-        help="Only save predictions; skip alignment and PLY export.",
     )
     parser.add_argument(
         "--seed",
@@ -275,18 +254,6 @@ def collect_scene_records(scene_dir: Path) -> tuple[list[dict], dict]:
     return usable_records, scene_info
 
 
-def save_predictions(results_path: Path, scene_name: str, payload: dict) -> Path:
-    predictions_dir = results_path / "predictions"
-    predictions_dir.mkdir(parents=True, exist_ok=True)
-    output_path = predictions_dir / f"{scene_name}.pt"
-    torch.save(payload, output_path)
-    return output_path
-
-
-def load_predictions(results_path: Path, scene_name: str) -> dict:
-    return _torch_load_cpu_maybe_mmap(results_path / "predictions" / f"{scene_name}.pt")
-
-
 def decode_prediction_extrinsics(predictions: dict) -> torch.Tensor:
     if "pose_enc" not in predictions:
         raise KeyError("Prediction payload must contain 'pose_enc'.")
@@ -295,10 +262,10 @@ def decode_prediction_extrinsics(predictions: dict) -> torch.Tensor:
     if not isinstance(pose_enc, torch.Tensor):
         pose_enc = torch.as_tensor(pose_enc)
     pred_extrinsic, _ = pose_encoding_to_extri_intri(pose_enc, image_hw)
-    pred_extrinsic = pred_extrinsic[0].detach().cpu().float()
+    pred_extrinsic = pred_extrinsic[0].float()
 
     num_frames = pred_extrinsic.shape[0]
-    pred_w2c = torch.eye(4, dtype=torch.float32).unsqueeze(0).repeat(num_frames, 1, 1)
+    pred_w2c = torch.eye(4, dtype=torch.float32, device=pred_extrinsic.device).unsqueeze(0).repeat(num_frames, 1, 1)
     pred_w2c[:, :3, :4] = pred_extrinsic
     return pred_w2c
 
@@ -430,40 +397,174 @@ def align_points_to_eth3d(
     return aligned_points, stats
 
 
-def sample_mask_indices(mask_indices: np.ndarray, max_points_per_image: int, rng: np.random.Generator) -> np.ndarray:
-    if max_points_per_image <= 0 or len(mask_indices) <= max_points_per_image:
-        return mask_indices
-    selected = rng.choice(mask_indices, size=max_points_per_image, replace=False)
-    selected.sort()
-    return selected
+def camera_centers_from_w2c_torch(w2c: torch.Tensor) -> torch.Tensor:
+    rot = w2c[:, :3, :3]
+    trans = w2c[:, :3, 3]
+    return -torch.einsum("nij,nj->ni", rot.transpose(1, 2), trans)
 
 
-def build_point_cloud(
-    world_points: np.ndarray,
-    world_points_conf: np.ndarray,
-    images_uint8: np.ndarray,
+def umeyama_similarity_torch(
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    estimate_scale: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if src.shape != dst.shape:
+        raise ValueError(f"Source and destination must have the same shape, got {tuple(src.shape)} vs {tuple(dst.shape)}")
+    if src.ndim != 2 or src.shape[1] != 3:
+        raise ValueError(f"Expected Nx3 point sets, got {tuple(src.shape)}")
+    if src.shape[0] < 3:
+        raise ValueError("At least 3 points are required for Sim(3) estimation.")
+
+    src = src.to(dtype=torch.float64)
+    dst = dst.to(dtype=torch.float64, device=src.device)
+    src_mean = src.mean(dim=0)
+    dst_mean = dst.mean(dim=0)
+    src_centered = src - src_mean
+    dst_centered = dst - dst_mean
+
+    cov = (dst_centered.T @ src_centered) / src.shape[0]
+    if torch.linalg.matrix_rank(cov).item() < 2:
+        raise ValueError("Point configuration is degenerate for Umeyama alignment.")
+
+    u, singular_values, vh = torch.linalg.svd(cov)
+    d = torch.eye(3, dtype=torch.float64, device=src.device)
+    if (torch.linalg.det(u) * torch.linalg.det(vh)).item() < 0:
+        d[-1, -1] = -1.0
+
+    rotation = u @ d @ vh
+    if estimate_scale:
+        src_var = torch.mean(torch.sum(src_centered * src_centered, dim=1))
+        if src_var.item() < 1e-12:
+            raise ValueError("Source points have near-zero variance; scale is ill-defined.")
+        scale = torch.sum(singular_values * torch.diag(d)) / src_var
+    else:
+        scale = torch.ones((), dtype=torch.float64, device=src.device)
+
+    translation = dst_mean - scale * (rotation @ src_mean)
+    return scale, rotation, translation
+
+
+def apply_similarity_torch(
+    points: torch.Tensor,
+    scale: torch.Tensor,
+    rotation: torch.Tensor,
+    translation: torch.Tensor,
+) -> torch.Tensor:
+    points_dtype = points.dtype
+    points = points.to(dtype=torch.float64)
+    aligned = scale * (points @ rotation.T) + translation
+    return aligned.to(dtype=points_dtype)
+
+
+def rigid_transform_from_first_frame_torch(pred_w2c: torch.Tensor, gt_w2c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    pred_c2w = torch.linalg.inv(pred_w2c)
+    gt_c2w = torch.linalg.inv(gt_w2c)
+    transform = gt_c2w @ pred_w2c
+    return transform[:3, :3], transform[:3, 3]
+
+
+def _camera_error_stats(errors: torch.Tensor) -> dict[str, float]:
+    errors = errors.detach().cpu()
+    return {
+        "mean": float(errors.mean()),
+        "median": float(torch.median(errors)),
+        "max": float(errors.max()),
+    }
+
+
+def align_points_to_eth3d_torch(
+    world_points: torch.Tensor,
+    pred_w2c: torch.Tensor,
+    gt_w2c: torch.Tensor,
+    alignment_mode: str,
+) -> tuple[torch.Tensor, dict]:
+    device = world_points.device
+    pred_w2c = pred_w2c.to(device=device, dtype=torch.float64)
+    gt_w2c = gt_w2c.to(device=device, dtype=torch.float64)
+    pred_centers = camera_centers_from_w2c_torch(pred_w2c)
+    gt_centers = camera_centers_from_w2c_torch(gt_w2c)
+    stats: dict[str, object] = {
+        "requested_alignment_mode": alignment_mode,
+        "used_alignment_mode": alignment_mode,
+        "sim3_success": False,
+    }
+
+    before_error = torch.linalg.norm(pred_centers - gt_centers, dim=1)
+    stats["camera_center_error_before"] = _camera_error_stats(before_error)
+
+    if alignment_mode == "none":
+        return world_points, stats
+
+    if alignment_mode == "sim3":
+        try:
+            scale, rotation, translation = umeyama_similarity_torch(pred_centers, gt_centers, estimate_scale=True)
+            aligned_points = apply_similarity_torch(world_points, scale, rotation, translation)
+            aligned_centers = apply_similarity_torch(pred_centers, scale, rotation, translation)
+            after_error = torch.linalg.norm(aligned_centers - gt_centers, dim=1)
+            stats["sim3_success"] = True
+            stats["sim3_scale"] = float(scale.detach().cpu())
+            stats["sim3_rotation"] = rotation.detach().cpu().tolist()
+            stats["sim3_translation"] = translation.detach().cpu().tolist()
+            stats["camera_center_error_after"] = _camera_error_stats(after_error)
+            return aligned_points, stats
+        except Exception as exc:
+            logger.warning("Sim3 alignment failed: %s. Falling back to rigid_first_frame.", exc)
+            stats["used_alignment_mode"] = "rigid_first_frame"
+            stats["sim3_failure_reason"] = str(exc)
+
+    rotation, translation = rigid_transform_from_first_frame_torch(pred_w2c[0], gt_w2c[0])
+    aligned_points = (world_points.to(dtype=torch.float64) @ rotation.T + translation).to(dtype=world_points.dtype)
+    aligned_centers = pred_centers @ rotation.T + translation
+    after_error = torch.linalg.norm(aligned_centers - gt_centers, dim=1)
+    stats["camera_center_error_after"] = _camera_error_stats(after_error)
+    stats["rigid_first_frame_rotation"] = rotation.detach().cpu().tolist()
+    stats["rigid_first_frame_translation"] = translation.detach().cpu().tolist()
+    return aligned_points, stats
+
+
+def build_point_cloud_torch(
+    world_points: torch.Tensor,
+    world_points_conf: torch.Tensor,
+    images_uint8: torch.Tensor,
     point_conf_thresh: float,
     max_points_per_image: int,
-    rng: np.random.Generator,
+    generator: torch.Generator,
 ) -> tuple[np.ndarray, dict]:
     num_frames = world_points.shape[0]
+
+    if max_points_per_image <= 0:
+        conf_mask = world_points_conf >= point_conf_thresh
+        per_image_counts = [int(count) for count in conf_mask.reshape(num_frames, -1).sum(dim=1).detach().cpu().tolist()]
+        if conf_mask.any():
+            points_tensor = torch.cat([world_points[conf_mask].float(), images_uint8[conf_mask].float()], dim=1)
+            points = points_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+        else:
+            points = np.empty((0, 6), dtype=np.float32)
+        stats = {
+            "per_image_kept_points": per_image_counts,
+            "total_points": int(points.shape[0]),
+        }
+        return points, stats
+
     fused_points = []
     per_image_counts = []
 
     for frame_idx in range(num_frames):
         conf_mask = world_points_conf[frame_idx] >= point_conf_thresh
-        flat_indices = np.flatnonzero(conf_mask.reshape(-1))
-        flat_indices = sample_mask_indices(flat_indices, max_points_per_image, rng)
+        flat_indices = torch.nonzero(conf_mask.reshape(-1), as_tuple=False).squeeze(1)
+        if max_points_per_image > 0 and flat_indices.numel() > max_points_per_image:
+            order = torch.randperm(flat_indices.numel(), generator=generator, device=flat_indices.device)[:max_points_per_image]
+            flat_indices = torch.sort(flat_indices[order]).values
         per_image_counts.append(int(len(flat_indices)))
-        if len(flat_indices) == 0:
+        if flat_indices.numel() == 0:
             continue
 
         xyz = world_points[frame_idx].reshape(-1, 3)[flat_indices]
         rgb = images_uint8[frame_idx].reshape(-1, 3)[flat_indices]
-        fused_points.append(np.concatenate([xyz, rgb.astype(np.float32)], axis=1))
+        fused_points.append(torch.cat([xyz.float(), rgb.float()], dim=1))
 
     if fused_points:
-        points = np.concatenate(fused_points, axis=0).astype(np.float32)
+        points = torch.cat(fused_points, dim=0).detach().cpu().numpy().astype(np.float32, copy=False)
     else:
         points = np.empty((0, 6), dtype=np.float32)
 
@@ -480,18 +581,17 @@ def scene_results_dir(results_path: Path, scene_name: str) -> Path:
     return output_dir
 
 
-def run_prediction(scene_name: str, image_paths: list[Path], model: VGGT, results_path: Path) -> dict:
+def run_prediction(image_paths: list[Path], model: VGGT) -> dict:
     predictions = predict(image_paths, model)
-    payload = {
-        "world_points": predictions["world_points"].detach().cpu(),
-        "world_points_conf": predictions["world_points_conf"].detach().cpu(),
-        "pose_enc": predictions["pose_enc"].detach().cpu(),
+    return {
+        "world_points": predictions["world_points"].detach(),
+        "world_points_conf": predictions["world_points_conf"].detach(),
+        "pose_enc": predictions["pose_enc"].detach(),
+        "images": predictions["images"].detach(),
         "image_names": [path.name for path in image_paths],
         "image_relative_names": [str(path) for path in image_paths],
         "images_shape_hw": tuple(predictions["images"].shape[-2:]),
     }
-    save_predictions(results_path, scene_name, payload)
-    return payload
 
 
 def export_scene(
@@ -506,10 +606,10 @@ def export_scene(
 
     world_points = predictions_payload["world_points"]
     world_points_conf = predictions_payload["world_points_conf"]
-    if isinstance(world_points, torch.Tensor):
-        world_points = world_points[0].cpu().numpy()
-    if isinstance(world_points_conf, torch.Tensor):
-        world_points_conf = world_points_conf[0].cpu().numpy()
+    if not isinstance(world_points, torch.Tensor) or not isinstance(world_points_conf, torch.Tensor):
+        raise TypeError("Prediction payload must keep world_points and world_points_conf as torch tensors.")
+    world_points = world_points[0]
+    world_points_conf = world_points_conf[0]
 
     image_paths = [record["image_path"] for record in scene_records]
     pred_relative_names = predictions_payload["image_relative_names"]
@@ -521,30 +621,38 @@ def export_scene(
             f"Found: {list(pred_relative_names)[:3]}..."
         )
 
-    pred_w2c = decode_prediction_extrinsics(predictions_payload).numpy().astype(np.float64)
-    gt_w2c = np.stack([record["w2c"] for record in scene_records], axis=0).astype(np.float64)
+    pred_w2c = decode_prediction_extrinsics(predictions_payload)
+    gt_w2c = torch.as_tensor(
+        np.stack([record["w2c"] for record in scene_records], axis=0),
+        dtype=torch.float64,
+        device=world_points.device,
+    )
 
-    aligned_world_points, alignment_stats = align_points_to_eth3d(
+    aligned_world_points, alignment_stats = align_points_to_eth3d_torch(
         world_points=world_points,
         pred_w2c=pred_w2c,
         gt_w2c=gt_w2c,
         alignment_mode=args.alignment_mode,
     )
 
-    images_uint8 = []
-    for image_path in image_paths:
-        image = np.asarray(torchvision_read_image(image_path))
-        images_uint8.append(image)
-    images_uint8 = np.stack(images_uint8, axis=0)
+    images_uint8 = prediction_images_uint8(predictions_payload["images"], device=world_points.device)
+    expected_hw = tuple(world_points_conf.shape[-2:])
+    if images_uint8.shape[1:3] != expected_hw:
+        raise ValueError(
+            f"Preprocessed RGB size for scene {scene_name} does not match prediction grid: "
+            f"RGB HxW={images_uint8.shape[1:3]}, prediction HxW={expected_hw}. "
+            "Check the model input preprocessing path."
+        )
 
-    rng = np.random.default_rng(args.seed + sum(ord(ch) for ch in scene_name))
-    points, point_stats = build_point_cloud(
+    generator = torch.Generator(device=world_points.device)
+    generator.manual_seed(args.seed + sum(ord(ch) for ch in scene_name))
+    points, point_stats = build_point_cloud_torch(
         aligned_world_points,
         world_points_conf,
         images_uint8,
         point_conf_thresh=args.point_conf_thresh,
         max_points_per_image=args.max_points_per_image,
-        rng=rng,
+        generator=generator,
     )
 
     ply_path = args.results_path / f"{scene_name}.ply"
@@ -565,14 +673,17 @@ def export_scene(
     return metadata
 
 
-def torchvision_read_image(image_path: Path) -> np.ndarray:
-    from PIL import Image
+def prediction_images_uint8(images: torch.Tensor, device: torch.device) -> torch.Tensor:
+    if images.ndim == 5:
+        images = images[0]
+    if images.ndim != 4:
+        raise ValueError(f"Expected prediction images with shape Nx3xHxW or 1xNx3xHxW, got {tuple(images.shape)}")
+    images = images.to(device=device)
+    images = images.permute(0, 2, 3, 1).mul(255.0).round().clamp(0, 255)
+    return images.to(torch.uint8)
 
-    image = Image.open(image_path).convert("RGB")
-    return np.asarray(image, dtype=np.uint8)
 
-
-def process_scene(scene_dir: Path, model: Optional[VGGT], args: argparse.Namespace) -> Optional[dict]:
+def process_scene(scene_dir: Path, model: VGGT, args: argparse.Namespace) -> Optional[dict]:
     scene_name = scene_dir.name
     logger.info("Processing ETH3D scene %s", scene_name)
 
@@ -592,20 +703,8 @@ def process_scene(scene_dir: Path, model: Optional[VGGT], args: argparse.Namespa
 
     image_paths = [record["image_path"] for record in scene_records]
 
-    if args.no_pred:
-        predictions_payload = load_predictions(args.results_path, scene_name)
-    else:
-        assert model is not None
-        predictions_payload = run_prediction(scene_name, image_paths, model, args.results_path)
-
+    predictions_payload = run_prediction(image_paths, model)
     predictions_payload["total_images_in_txt"] = scene_info["total_images_in_txt"]
-
-    if args.pred_only:
-        return {
-            "scene_name": scene_name,
-            "status": "pred_only",
-            **scene_info,
-        }
 
     metadata = export_scene(scene_dir, scene_records, predictions_payload, scene_info, args)
     metadata.update(scene_info)
@@ -661,8 +760,6 @@ def main() -> None:
     logger.setLevel(logging.INFO)
     args = parse_args()
 
-    if not args.no_pred and not args.model_path:
-        raise ValueError("Model path must be provided unless --no_pred is set.")
     if args.max_points_per_image < 0:
         raise ValueError("--max_points_per_image must be >= 0.")
 
@@ -678,18 +775,16 @@ def main() -> None:
 
     args.results_path.mkdir(parents=True, exist_ok=True)
 
-    model = None
-    if not args.no_pred:
-        logger.info("Loading model from %s", args.model_path)
-        model = load_model(
-            args.model_path,
-            model_args={
-                "enable_camera": True,
-                "enable_point": True,
-                "enable_depth": False,
-                "enable_track": False,
-            },
-        )
+    logger.info("Loading model from %s", args.model_path)
+    model = load_model(
+        args.model_path,
+        model_args={
+            "enable_camera": True,
+            "enable_point": True,
+            "enable_depth": False,
+            "enable_track": False,
+        },
+    )
 
     summary = []
     try:
