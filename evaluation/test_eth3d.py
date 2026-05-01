@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--point_conf_thresh",
         type=float,
-        default=5.0,
+        default=1.0,
         help="Confidence threshold for predicted world points.",
     )
     parser.add_argument(
