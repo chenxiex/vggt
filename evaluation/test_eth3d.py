@@ -74,6 +74,17 @@ def parse_args() -> argparse.Namespace:
         default=42,
         help="Random seed for deterministic point sampling.",
     )
+    parser.add_argument(
+        "--smoothquant_scale_path",
+        type=Path,
+        default=None,
+        help="Path to SmoothQuant calibration artifact (.pt) for W8A16 attention inference.",
+    )
+    parser.add_argument(
+        "--smoothquant_allow_missing",
+        action="store_true",
+        help="Allow missing SmoothQuant scales for some attention layers.",
+    )
     return parser.parse_args()
 
 
@@ -784,6 +795,8 @@ def main() -> None:
             "enable_depth": False,
             "enable_track": False,
         },
+        smoothquant_path=args.smoothquant_scale_path,
+        smoothquant_strict=not args.smoothquant_allow_missing,
     )
 
     summary = []
