@@ -22,53 +22,11 @@ MAX_IO_WORKERS = max(1, min(8, os.cpu_count() or 1))
 MAX_UPSAMPLE_WORKERS = max(1, min(8, os.cpu_count() or 1))
 
 
-def _torch_load_cpu_maybe_mmap(file_path: Path):
-    # mmap=True enables lazy tensor storage loading on CPU, which is faster when we only consume a subset of keys.
-    try:
-        return torch.load(file_path, map_location=torch.device("cpu"), mmap=True)
-    except TypeError:
-        return torch.load(file_path, map_location=torch.device("cpu"))
-    except RuntimeError as exc:
-        if "mmap" in str(exc).lower():
-            return torch.load(file_path, map_location=torch.device("cpu"))
-        raise
-
-
 def configure_logging(level: int = logging.INFO):
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
-
-
-def save_predictions(results_path: Path, scene_name: str, predictions, sample_no):
-    save_dict = {
-        "predictions": predictions,
-        "sample_no": sample_no
-    }
-
-    if not results_path.exists():
-        os.makedirs(results_path, exist_ok=True)
-
-    torch.save(save_dict, results_path/f"{scene_name}.pt")
-
-
-def load_predictions(results_path: Path, scene_name: str):
-    results = _torch_load_cpu_maybe_mmap(results_path/f"{scene_name}.pt")
-    sample_no = results["sample_no"]
-    predictions = results["predictions"]
-
-    if "depth" not in predictions or "depth_conf" not in predictions:
-        raise KeyError(
-            f"Prediction file {results_path / f'{scene_name}.pt'} must contain 'depth' and 'depth_conf'."
-        )
-
-    # Keep only the fields used by DTU evaluation to reduce memory pressure and downstream object traversal.
-    predictions = {
-        "depth": predictions["depth"],
-        "depth_conf": predictions["depth_conf"],
-    }
-    return predictions, sample_no
 
 
 def load_gt_depth(gt_depths_path: Path, sample_no: list[int]):
@@ -308,29 +266,18 @@ def split_scene_names(scene_names: list[str], num_workers: int) -> list[list[str
 def process_scene(
     args: argparse.Namespace,
     scene_name: str,
-    model: Optional[VGGT],
+    model: VGGT,
     worker_tag: str,
 ):
     logger.info("%s Processing %s...", worker_tag, scene_name)
-    if not args.no_pred:
-        logger.info("%s Predicting depth maps...", worker_tag)
-        images_path = args.dtu_test_1200_path/"Rectified"/scene_name
-        sample_no = build_sample_indices(scene_name, args.sample_size, args.seed)
-        sampled_image_paths = [
-            images_path/f"rect_{i+1:03d}_3_r5000.png" for i in sample_no]
-        assert model is not None, "Model should not be None when not skipping prediction"
-        predictions = predict(sampled_image_paths, model)
-        save_predictions(args.results_path, scene_name,
-                         predictions, sample_no)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    else:
-        logger.info("%s Loading predictions...", worker_tag)
-        predictions, sample_no = load_predictions(
-            args.results_path, scene_name)
-
-    if args.pred_only:
-        return
+    logger.info("%s Predicting depth maps...", worker_tag)
+    images_path = args.dtu_test_1200_path/"Rectified"/scene_name
+    sample_no = build_sample_indices(scene_name, args.sample_size, args.seed)
+    sampled_image_paths = [
+        images_path/f"rect_{i+1:03d}_3_r5000.png" for i in sample_no]
+    predictions = predict(sampled_image_paths, model)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # 对齐
     logger.info("%s Aligning predicted depth maps to ground truth...", worker_tag)
@@ -424,17 +371,14 @@ def run_worker(
         logger.info("%s No scenes assigned, exiting.", worker_tag)
         return
 
-    model = None
-    if not args.no_pred:
-        logger.info("%s Using model from %s", worker_tag, args.model_path)
-        model = load_model(args.model_path, model_args={"enable_point": False, "enable_track": False})
+    logger.info("%s Using model from %s", worker_tag, args.model_path)
+    model = load_model(args.model_path, model_args={"enable_point": False, "enable_track": False})
 
     try:
         for scene_name in scene_names:
             process_scene(args, scene_name, model, worker_tag)
     finally:
-        if model is not None:
-            del model
+        del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -460,13 +404,9 @@ if __name__ == "__main__":
     parser.add_argument("--results_path", type=Path, required=True,
                         help="Path to save the DTU testing results")
     parser.add_argument("--model_path", type=Path,
-                        required=False, help="Path to the trained VGGT model")
+                        required=True, help="Path to the trained VGGT model")
     parser.add_argument("--sample_size", type=int, default=49,
                         help="Sample size for prediction")
-    parser.add_argument("--no_pred", action="store_true",
-                        help="If set, skip prediction and only load existing predictions")
-    parser.add_argument("--pred_only", action="store_true",
-                        help="If set, only perform prediction without alignment and fusion")
     parser.add_argument('--scans', type=str, default=None,
                         help="Scene ID numbers to evaluate (e.g., 1,2,3). If not provided or set to 'true', will evaluate all scenes in the scan list.")
     parser.add_argument('--gpu_ids', type=str, default=None,
@@ -486,10 +426,6 @@ if __name__ == "__main__":
         help="Use upsampled depth only for GT alignment; keep fusion on the native prediction resolution and scale camera intrinsics accordingly. Enabled by default.",
     )
     args = parser.parse_args()
-
-    if not args.no_pred and not args.model_path:
-        raise ValueError(
-            "Model path must be provided if not skipping prediction.")
 
     if args.sample_size <= 0 or args.sample_size > 49:
         raise ValueError("sample_size must be in [1, 49].")
