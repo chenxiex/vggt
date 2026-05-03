@@ -85,6 +85,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow missing SmoothQuant scales for some attention layers.",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="pseudo",
+        choices=["pseudo", "torchao", "bitsandbytes", "trt_int8"],
+        help="Quantization backend to use.",
+    )
     return parser.parse_args()
 
 
@@ -795,8 +802,11 @@ def main() -> None:
             "enable_depth": False,
             "enable_track": False,
         },
-        smoothquant_path=args.smoothquant_scale_path,
-        smoothquant_strict=not args.smoothquant_allow_missing,
+        backend=args.backend,
+        quant_config={
+            "smoothquant_path": args.smoothquant_scale_path,
+            "smoothquant_strict": not args.smoothquant_allow_missing,
+        },
     )
 
     summary = []

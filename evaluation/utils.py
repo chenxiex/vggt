@@ -13,7 +13,7 @@ from urllib.request import urlretrieve
 import os
 import logging
 
-from vggt.quantization.smoothquant import apply_smoothquant_w8a16, load_smoothquant_artifact
+from vggt.quantization.backends import create_quant_backend
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
@@ -48,8 +48,8 @@ def _get_xy1_grid(height: int, width: int, device: torch.device) -> torch.Tensor
 def load_model(
     model_path: Path,
     model_args: Optional[dict] = None,
-    smoothquant_path: Optional[Path] = None,
-    smoothquant_strict: bool = True,
+    backend: str = "pseudo",
+    quant_config: Optional[dict] = None,
 ) -> VGGT:
     if not model_path.exists():
         logger.info(f"Model doesn't exists. Downloading from {MODEL_URL}...")
@@ -84,15 +84,9 @@ def load_model(
     if missing:
         logger.info(f"Missing keys when loading model: {missing}")
 
-    if smoothquant_path is not None:
-        artifact = load_smoothquant_artifact(smoothquant_path)
-        quant_info = apply_smoothquant_w8a16(model, artifact, strict=smoothquant_strict)
-        logger.info(
-            "Applied SmoothQuant W8A16 to %d attention linear layers (missing=%d, unused=%d)",
-            quant_info["replaced"],
-            len(quant_info["missing"]),
-            len(quant_info["unused"]),
-        )
+    quant_backend = create_quant_backend(backend)
+    model = quant_backend.prepare(model, quant_config=quant_config)
+    model = quant_backend.convert(model)
 
     model.eval()
     model = model.to(device)
