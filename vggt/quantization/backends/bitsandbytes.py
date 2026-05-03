@@ -11,8 +11,8 @@ from vggt.quantization.backends.base import QuantBackend
 logger = logging.getLogger(__name__)
 
 
-class RealQuantBackend(QuantBackend):
-    """Real quant backend MVP using bitsandbytes linear replacement when available."""
+class BitsandbytesQuantBackend(QuantBackend):
+    """Bitsandbytes quant backend MVP using Linear8bitLt replacement."""
 
     def __init__(self) -> None:
         self._model: nn.Module | None = None
@@ -25,7 +25,7 @@ class RealQuantBackend(QuantBackend):
         keywords = quant_config.get("target_linear_keywords")
         if keywords:
             self._target_keywords = tuple(str(k) for k in keywords)
-        logger.info("[RealQuantBackend] prepare done. target keywords=%s", self._target_keywords)
+        logger.info("[BitsandbytesQuantBackend] prepare done. target keywords=%s", self._target_keywords)
         return model
 
     def convert(self, model_or_graph: Any) -> Any:
@@ -35,7 +35,7 @@ class RealQuantBackend(QuantBackend):
             import bitsandbytes as bnb  # type: ignore
         except ImportError:
             logger.warning(
-                "[RealQuantBackend] bitsandbytes is not installed; fallback to FP16/FP32 for all layers."
+                "[BitsandbytesQuantBackend] bitsandbytes is not installed; fallback to FP16/FP32 for all layers."
             )
             self._model = model
             self._converted = True
@@ -47,7 +47,7 @@ class RealQuantBackend(QuantBackend):
                 continue
             if not any(token in name.lower() for token in self._target_keywords):
                 fallback += 1
-                logger.info("[RealQuantBackend] fallback layer=%s (not in target keywords)", name)
+                logger.info("[BitsandbytesQuantBackend] fallback layer=%s (not in target keywords)", name)
                 continue
 
             parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
@@ -67,7 +67,7 @@ class RealQuantBackend(QuantBackend):
             replaced += 1
 
         logger.info(
-            "[RealQuantBackend] convert done. replaced=%d, fallback_fp=%d",
+            "[BitsandbytesQuantBackend] convert done. replaced=%d, fallback_fp=%d",
             replaced,
             fallback,
         )
@@ -78,12 +78,12 @@ class RealQuantBackend(QuantBackend):
 
     def run(self, inputs: Any) -> Any:
         if self._model is None or not self._converted:
-            raise RuntimeError("RealQuantBackend is not converted. Call convert() first.")
+            raise RuntimeError("BitsandbytesQuantBackend is not converted. Call convert() first.")
         return self._model(inputs)
 
     def capabilities(self) -> Mapping[str, Any]:
         return {
-            "name": "real",
+            "name": "bitsandbytes",
             "bit_widths": ["int8"],
             "operators": ["linear(qkv,proj,fc,mlp)"],
             "devices": ["cuda"],
