@@ -289,6 +289,7 @@ def filter_depth(
 
 
 def write_ply(file: Path, points):
+    os.makedirs(file.parent, exist_ok=True)
     if isinstance(points, torch.Tensor):
         points = points.detach().cpu().numpy()
 
