@@ -482,7 +482,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42,
                         help="Random seed for deterministic per-scene image sampling.")
     parser.add_argument('--smoothquant_scale_path', type=Path, default=None,
-                        help="Path to SmoothQuant calibration artifact (.pt) for W8A16 attention inference.")
+                        help="Path to SmoothQuant calibration artifact (.pt) for attention inference.")
     parser.add_argument('--smoothquant_allow_missing', action='store_true',
                         help="Allow missing SmoothQuant scales for some attention layers.")
     parser.add_argument(
@@ -537,4 +537,3 @@ if __name__ == "__main__":
         else:
             logger.info("Running single-worker evaluation on CPU")
         run_worker(args, scene_names, worker_idx=0, gpu_id=selected_gpu)
-

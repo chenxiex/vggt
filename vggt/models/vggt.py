@@ -114,12 +114,17 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         self,
         scales_or_artifact_or_path: Mapping[str, Any] | str | Path,
         strict: bool = True,
+        quant_config: Any | None = None,
     ) -> dict[str, Any]:
-        """Apply SmoothQuant-based W8A16 quantization to frame/global attention qkv/proj layers."""
-        from vggt.quantization.smoothquant import apply_smoothquant_w8a16, load_smoothquant_artifact
+        """Apply SmoothQuant-based quantization to frame/global attention qkv/proj layers."""
+        from vggt.quantization.smoothquant import apply_smoothquant, load_smoothquant_artifact
 
         if isinstance(scales_or_artifact_or_path, (str, Path)):
             scales_or_artifact_or_path = load_smoothquant_artifact(scales_or_artifact_or_path)
 
-        return apply_smoothquant_w8a16(self, scales_or_artifact_or_path, strict=strict)
-
+        return apply_smoothquant(
+            self,
+            scales_or_artifact_or_path,
+            quant_config=quant_config,
+            strict=strict,
+        )

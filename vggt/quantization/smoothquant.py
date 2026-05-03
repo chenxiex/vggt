@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from vggt.layers.attention import Attention
+from vggt.quantization.config import QuantizationConfig, dtype_to_string
 
 DEFAULT_WEIGHT_QMAX = 127.0
 DEFAULT_ACT_QMAX = 65504.0
@@ -125,8 +126,9 @@ def compute_smooth_scale(
 def calibrate_attention_scales(
     model: nn.Module,
     run_calibration: Callable[[], None],
-    weight_qmax: float = DEFAULT_WEIGHT_QMAX,
-    act_qmax: float = DEFAULT_ACT_QMAX,
+    weight_qmax: float | None = None,
+    act_qmax: float | None = None,
+    quant_config: QuantizationConfig | Mapping[str, Any] | None = None,
     momentum: float = 0.95,
     eps: float = EPS,
     module_prefixes: tuple[str, ...] = DEFAULT_ATTENTION_MODULE_PREFIXES,
@@ -142,6 +144,15 @@ def calibrate_attention_scales(
     """
     if momentum < 0.0 or momentum > 1.0:
         raise ValueError(f"momentum must be in [0, 1], got {momentum}")
+
+    config = QuantizationConfig.from_any(quant_config)
+    if weight_qmax is not None:
+        config = config.with_updates(weight_qmax=weight_qmax)
+    if act_qmax is not None:
+        config = config.with_updates(activation_qmax=act_qmax)
+
+    resolved_weight_qmax = config.resolve_weight_qmax()
+    resolved_act_qmax = config.resolve_activation_qmax()
 
     layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
     act_max: Dict[str, float] = {name: 0.0 for name in layers}
@@ -167,8 +178,8 @@ def calibrate_attention_scales(
             new_scale = compute_smooth_scale(
                 weight_max=weight_max[name],
                 act_max=cur,
-                weight_qmax=weight_qmax,
-                act_qmax=act_qmax,
+                weight_qmax=resolved_weight_qmax,
+                act_qmax=resolved_act_qmax,
                 eps=eps,
             )
             old_scale = scales_ema[name]
@@ -199,8 +210,8 @@ def calibrate_attention_scales(
             scale = compute_smooth_scale(
                 weight_max=weight_max[layer_name],
                 act_max=layer_act_max,
-                weight_qmax=weight_qmax,
-                act_qmax=act_qmax,
+                weight_qmax=resolved_weight_qmax,
+                act_qmax=resolved_act_qmax,
                 eps=eps,
             )
         scale = float(scale)
@@ -214,8 +225,10 @@ def calibrate_attention_scales(
 
     return {
         "meta": {
-            "weight_qmax": float(weight_qmax),
-            "act_qmax": float(act_qmax),
+            **config.to_meta(),
+            "weight_qmax": float(resolved_weight_qmax),
+            "activation_qmax": float(resolved_act_qmax),
+            "act_qmax": float(resolved_act_qmax),
             "momentum": float(momentum),
             "scale_update": "ema_per_batch",
             "num_layers": len(layers),
@@ -225,24 +238,32 @@ def calibrate_attention_scales(
     }
 
 
-class SmoothQuantW8A16Linear(nn.Module):
-    """Linear layer with INT8 weight storage and SmoothQuant activation scaling."""
+class SmoothQuantLinear(nn.Module):
+    """Linear layer with SmoothQuant scaling and configurable fake quantization."""
 
     def __init__(
         self,
-        weight_int8: torch.Tensor,
+        weight_quantized: torch.Tensor,
         weight_scale: float,
         smooth_scale: float,
         bias: torch.Tensor | None,
+        quant_config: QuantizationConfig | Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        if weight_int8.dtype != torch.int8:
-            raise TypeError(f"weight_int8 must be torch.int8, got {weight_int8.dtype}")
+        if weight_quantized.dtype != torch.int8:
+            raise TypeError(f"weight_quantized must be torch.int8, got {weight_quantized.dtype}")
 
-        self.in_features = int(weight_int8.shape[1])
-        self.out_features = int(weight_int8.shape[0])
+        config = QuantizationConfig.from_any(quant_config)
+        self.weight_bits = int(config.weight_bits)
+        self.activation_bits = int(config.activation_bits)
+        self.compute_dtype = config.compute_dtype
+        self.weight_qmax = float(config.resolve_weight_qmax())
+        self.activation_qmax = float(config.resolve_activation_qmax())
 
-        self.register_buffer("weight_int8", weight_int8.contiguous())
+        self.in_features = int(weight_quantized.shape[1])
+        self.out_features = int(weight_quantized.shape[0])
+
+        self.register_buffer("weight_int8", weight_quantized.contiguous())
         self.register_buffer("weight_scale", torch.tensor(float(weight_scale), dtype=torch.float32))
         self.register_buffer("smooth_scale", torch.tensor(float(smooth_scale), dtype=torch.float32))
 
@@ -250,6 +271,10 @@ class SmoothQuantW8A16Linear(nn.Module):
             self.register_buffer("bias", None)
         else:
             self.register_buffer("bias", bias.detach().float().contiguous())
+
+    @property
+    def weight_quantized(self) -> torch.Tensor:
+        return self.weight_int8
 
     @staticmethod
     def _quantize_weight(
@@ -265,12 +290,98 @@ class SmoothQuantW8A16Linear(nn.Module):
             weight_int8 = torch.zeros_like(scaled_weight, dtype=torch.int8)
         else:
             weight_scale = max(max_abs / float(qmax), eps)
+            qmax_int = int(qmax)
             weight_int8 = torch.clamp(
                 torch.round(scaled_weight / weight_scale),
-                min=-int(qmax),
-                max=int(qmax),
+                min=-qmax_int,
+                max=qmax_int,
             ).to(torch.int8)
         return weight_int8, float(weight_scale)
+
+    @classmethod
+    def from_linear(
+        cls,
+        linear: nn.Linear,
+        smooth_scale: float,
+        quant_config: QuantizationConfig | Mapping[str, Any] | None = None,
+        qmax: float | None = None,
+        eps: float = EPS,
+    ) -> "SmoothQuantLinear":
+        config = QuantizationConfig.from_any(quant_config)
+        if qmax is not None:
+            config = config.with_updates(weight_qmax=qmax)
+
+        weight_int8, weight_scale = cls._quantize_weight(
+            weight=linear.weight,
+            smooth_scale=smooth_scale,
+            qmax=config.resolve_weight_qmax(),
+            eps=eps,
+        )
+        return cls(
+            weight_quantized=weight_int8,
+            weight_scale=weight_scale,
+            smooth_scale=smooth_scale,
+            bias=linear.bias,
+            quant_config=config,
+        )
+
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"weight_bits={self.weight_bits}, activation_bits={self.activation_bits}, "
+            f"compute_dtype={dtype_to_string(self.compute_dtype)}, "
+            f"smooth_scale={float(self.smooth_scale.item()):.6g}"
+        )
+
+    def _fake_quant_activation(self, x: torch.Tensor) -> torch.Tensor:
+        max_abs = x.detach().abs().amax()
+        if not torch.isfinite(max_abs) or float(max_abs.item()) <= EPS:
+            return torch.zeros_like(x)
+
+        scale = torch.clamp(max_abs / self.activation_qmax, min=EPS)
+        return torch.clamp(
+            torch.round(x / scale),
+            min=-int(self.activation_qmax),
+            max=int(self.activation_qmax),
+        ) * scale
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        compute_dtype = self.compute_dtype or x.dtype
+        x_compute = x.to(dtype=compute_dtype)
+        x_scaled = x_compute * self.smooth_scale.to(dtype=compute_dtype, device=x.device)
+
+        if self.activation_bits < 16:
+            x_scaled = self._fake_quant_activation(x_scaled)
+
+        weight = self.weight_int8.to(device=x.device, dtype=compute_dtype) * self.weight_scale.to(
+            dtype=compute_dtype,
+            device=x.device,
+        )
+
+        bias = None
+        if self.bias is not None:
+            bias = self.bias.to(dtype=compute_dtype, device=x.device)
+
+        return F.linear(x_scaled, weight, bias)
+
+
+class SmoothQuantW8A16Linear(SmoothQuantLinear):
+    """Compatibility wrapper for the original W8A16 SmoothQuant layer."""
+
+    def __init__(
+        self,
+        weight_int8: torch.Tensor,
+        weight_scale: float,
+        smooth_scale: float,
+        bias: torch.Tensor | None,
+    ) -> None:
+        super().__init__(
+            weight_quantized=weight_int8,
+            weight_scale=weight_scale,
+            smooth_scale=smooth_scale,
+            bias=bias,
+            quant_config=QuantizationConfig(),
+        )
 
     @classmethod
     def from_linear(
@@ -280,7 +391,7 @@ class SmoothQuantW8A16Linear(nn.Module):
         qmax: float = DEFAULT_WEIGHT_QMAX,
         eps: float = EPS,
     ) -> "SmoothQuantW8A16Linear":
-        weight_int8, weight_scale = cls._quantize_weight(
+        weight_int8, weight_scale = SmoothQuantLinear._quantize_weight(
             weight=linear.weight,
             smooth_scale=smooth_scale,
             qmax=qmax,
@@ -293,32 +404,28 @@ class SmoothQuantW8A16Linear(nn.Module):
             bias=linear.bias,
         )
 
-    def extra_repr(self) -> str:
-        return (
-            f"in_features={self.in_features}, out_features={self.out_features}, "
-            f"weight_dtype=int8, smooth_scale={float(self.smooth_scale.item()):.6g}"
-        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_scaled = x * self.smooth_scale.to(dtype=x.dtype, device=x.device)
-        weight = self.weight_int8.to(dtype=x.dtype) * self.weight_scale.to(dtype=x.dtype, device=x.device)
-
-        bias = None
-        if self.bias is not None:
-            bias = self.bias.to(dtype=x.dtype, device=x.device)
-
-        return F.linear(x_scaled, weight, bias)
+def _artifact_meta(scales_or_artifact: Mapping[str, Any]) -> Mapping[str, Any]:
+    meta = scales_or_artifact.get("meta")
+    return meta if isinstance(meta, Mapping) else {}
 
 
-def apply_smoothquant_w8a16(
+def apply_smoothquant(
     model: nn.Module,
     scales_or_artifact: Mapping[str, Any],
-    strict: bool = True,
-    weight_qmax: float = DEFAULT_WEIGHT_QMAX,
+    quant_config: QuantizationConfig | Mapping[str, Any] | None = None,
+    strict: bool | None = None,
+    weight_qmax: float | None = None,
     eps: float = EPS,
     module_prefixes: tuple[str, ...] = DEFAULT_ATTENTION_MODULE_PREFIXES,
 ) -> Dict[str, Any]:
-    """Replace frame/global attention qkv/proj linear layers with SmoothQuantW8A16Linear."""
+    """Replace frame/global attention qkv/proj linear layers with SmoothQuantLinear."""
+    config = QuantizationConfig.from_any(quant_config).with_artifact_meta(_artifact_meta(scales_or_artifact))
+    if strict is not None:
+        config = config.with_updates(smoothquant_strict=strict)
+    if weight_qmax is not None:
+        config = config.with_updates(weight_qmax=weight_qmax)
+
     scales = normalize_scale_dict(scales_or_artifact)
     layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
 
@@ -332,16 +439,16 @@ def apply_smoothquant_w8a16(
 
         parent_name, child_name = layer_name.rsplit(".", 1) if "." in layer_name else ("", layer_name)
         parent = model.get_submodule(parent_name) if parent_name else model
-        quant_linear = SmoothQuantW8A16Linear.from_linear(
+        quant_linear = SmoothQuantLinear.from_linear(
             linear,
             smooth_scale=scales[layer_name],
-            qmax=weight_qmax,
+            quant_config=config,
             eps=eps,
         )
         setattr(parent, child_name, quant_linear)
         replaced.append(layer_name)
 
-    if strict and missing:
+    if config.smoothquant_strict and missing:
         raise KeyError(
             "Missing SmoothQuant scales for attention linear layers: "
             + ", ".join(sorted(missing)[:10])
@@ -353,4 +460,25 @@ def apply_smoothquant_w8a16(
         "replaced": len(replaced),
         "missing": missing,
         "unused": unused,
+        "quant_config": config.to_meta(),
     }
+
+
+def apply_smoothquant_w8a16(
+    model: nn.Module,
+    scales_or_artifact: Mapping[str, Any],
+    strict: bool = True,
+    weight_qmax: float = DEFAULT_WEIGHT_QMAX,
+    eps: float = EPS,
+    module_prefixes: tuple[str, ...] = DEFAULT_ATTENTION_MODULE_PREFIXES,
+) -> Dict[str, Any]:
+    """Compatibility wrapper for the original W8A16 SmoothQuant entry point."""
+    config = QuantizationConfig(weight_bits=8, activation_bits=16, weight_qmax=weight_qmax)
+    return apply_smoothquant(
+        model=model,
+        scales_or_artifact=scales_or_artifact,
+        quant_config=config,
+        strict=strict,
+        eps=eps,
+        module_prefixes=module_prefixes,
+    )

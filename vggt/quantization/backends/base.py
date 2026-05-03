@@ -8,7 +8,7 @@ class QuantBackend(ABC):
     """Unified quantization backend interface."""
 
     @abstractmethod
-    def prepare(self, model: Any, quant_config: Mapping[str, Any] | None = None) -> Any:
+    def prepare(self, model: Any, quant_config: Any | None = None) -> Any:
         """Prepare model/graph for quantization workflow."""
 
     @abstractmethod

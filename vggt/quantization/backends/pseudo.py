@@ -4,23 +4,23 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from vggt.quantization.backends.base import QuantBackend
-from vggt.quantization.smoothquant import apply_smoothquant_w8a16, load_smoothquant_artifact
+from vggt.quantization.config import QuantizationConfig
+from vggt.quantization.smoothquant import apply_smoothquant, load_smoothquant_artifact
 
 
 class PseudoQuantBackend(QuantBackend):
-    """Pseudo quant backend based on existing SmoothQuant W8A16 replacement."""
+    """Pseudo quant backend based on SmoothQuant linear replacement."""
 
     def __init__(self) -> None:
         self._model = None
 
-    def prepare(self, model: Any, quant_config: Mapping[str, Any] | None = None) -> Any:
-        quant_config = quant_config or {}
-        smoothquant_path = quant_config.get("smoothquant_path")
-        strict = bool(quant_config.get("smoothquant_strict", True))
+    def prepare(self, model: Any, quant_config: Mapping[str, Any] | QuantizationConfig | None = None) -> Any:
+        config = QuantizationConfig.from_any(quant_config)
+        smoothquant_path = config.smoothquant_path
 
         if smoothquant_path is not None:
             artifact = load_smoothquant_artifact(Path(smoothquant_path))
-            apply_smoothquant_w8a16(model, artifact, strict=strict)
+            apply_smoothquant(model, artifact, quant_config=config)
 
         return model
 
@@ -36,7 +36,8 @@ class PseudoQuantBackend(QuantBackend):
     def capabilities(self) -> Mapping[str, Any]:
         return {
             "name": "pseudo",
-            "bit_widths": ["w8a16"],
+            "bit_widths": ["w2-w8", "a2-a16"],
+            "compute_dtypes": ["input", "float32", "float16", "bfloat16"],
             "operators": ["linear(qkv,proj)"],
             "devices": ["cpu", "cuda"],
         }

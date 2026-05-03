@@ -1,5 +1,8 @@
+from .config import QuantizationConfig
 from .smoothquant import (
+    SmoothQuantLinear,
     SmoothQuantW8A16Linear,
+    apply_smoothquant,
     apply_smoothquant_w8a16,
     calibrate_attention_scales,
     compute_smooth_scale,
@@ -9,7 +12,10 @@ from .smoothquant import (
 )
 
 __all__ = [
+    "QuantizationConfig",
+    "SmoothQuantLinear",
     "SmoothQuantW8A16Linear",
+    "apply_smoothquant",
     "apply_smoothquant_w8a16",
     "calibrate_attention_scales",
     "compute_smooth_scale",

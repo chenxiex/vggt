@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
         "--smoothquant_scale_path",
         type=Path,
         default=None,
-        help="Path to SmoothQuant calibration artifact (.pt) for W8A16 attention inference.",
+        help="Path to SmoothQuant calibration artifact (.pt) for attention inference.",
     )
     parser.add_argument(
         "--smoothquant_allow_missing",

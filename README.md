@@ -176,11 +176,14 @@ Run the following command to run reconstruction and visualize the point clouds i
 python demo_viser.py --image_folder path/to/your/images/folder
 ```
 
-## SmoothQuant W8A16 (Attention)
+## SmoothQuant Pseudo Quantization (Attention)
 
 The repository now includes a SmoothQuant-style workflow for attention-layer linear projections (`qkv` and `proj`).
 
-1. Run calibration on a small image set to estimate `weight_max`, `act_max`, and per-layer `scale`:
+1. Run calibration on a small image set to estimate `weight_max`, `act_max`, and per-layer `scale`.
+   By default this keeps the previous W8A16 behavior. Use `--weight_bits`,
+   `--activation_bits`, and `--compute_dtype` to calibrate another pseudo
+   quantization configuration.
 
 ```bash
 python evaluation/calibrate_smoothquant.py \
@@ -191,14 +194,29 @@ python evaluation/calibrate_smoothquant.py \
   --batch_size 8
 ```
 
+For example, W4A8 calibration:
+
+```bash
+python evaluation/calibrate_smoothquant.py \
+  --model_path ./ckpt/model.pt \
+  --calib_dir /YOUR/CALIB/IMAGES \
+  --output_path ./outputs/smoothquant_w4a8_scales.pt \
+  --weight_bits 4 \
+  --activation_bits 8
+```
+
 2. Apply SmoothQuant scales before inference:
 
 ```python
 from vggt.models.vggt import VGGT
+from vggt.quantization import QuantizationConfig
 
 model = VGGT()
 model.load_state_dict(...)  # your checkpoint
-model.apply_attention_smoothquant("./outputs/smoothquant_scales.pt")
+model.apply_attention_smoothquant(
+    "./outputs/smoothquant_w4a8_scales.pt",
+    quant_config=QuantizationConfig(weight_bits=4, activation_bits=8),
+)
 model.eval()
 ```
 

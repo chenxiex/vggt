@@ -9,6 +9,7 @@ from urllib.request import urlretrieve
 import torch
 
 from vggt.models.vggt import VGGT
+from vggt.quantization.config import QuantizationConfig, dtype_to_string
 from vggt.quantization.smoothquant import calibrate_attention_scales, save_smoothquant_artifact
 from vggt.utils.load_fn import load_and_preprocess_images
 
@@ -50,8 +51,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="Random seed for calibration sampling")
     parser.add_argument("--preprocess_mode", type=str, choices=["crop", "pad"], default="crop")
     parser.add_argument("--recursive", action="store_true", help="Recursively search images under calib_dir")
-    parser.add_argument("--weight_qmax", type=float, default=127.0, help="Weight quant range max for INT8")
-    parser.add_argument("--act_qmax", type=float, default=65504.0, help="Activation range max for A16")
+    parser.add_argument("--weight_bits", type=int, default=8, help="Weight bit width for SmoothQuant calibration")
+    parser.add_argument("--activation_bits", type=int, default=16, help="Activation bit width for SmoothQuant calibration")
+    parser.add_argument(
+        "--compute_dtype",
+        type=str,
+        choices=["auto", "float32", "float16", "bfloat16"],
+        default="auto",
+        help="Computation dtype recorded in the quantization config. auto keeps legacy input-dtype behavior.",
+    )
+    parser.add_argument("--weight_qmax", type=float, default=None, help="Optional override for weight quant range max")
+    parser.add_argument("--act_qmax", type=float, default=None, help="Optional override for activation range max")
     parser.add_argument(
         "--momentum",
         type=float,
@@ -60,6 +70,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--disable_amp", action="store_true", help="Disable AMP during calibration")
     return parser.parse_args()
+
+
+def build_quant_config(args: argparse.Namespace) -> QuantizationConfig:
+    config_data: dict[str, object] = {
+        "weight_bits": args.weight_bits,
+        "activation_bits": args.activation_bits,
+    }
+    if args.compute_dtype != "auto":
+        config_data["compute_dtype"] = args.compute_dtype
+    if args.weight_qmax is not None:
+        config_data["weight_qmax"] = args.weight_qmax
+    if args.act_qmax is not None:
+        config_data["activation_qmax"] = args.act_qmax
+    return QuantizationConfig.from_mapping(config_data)
+
+
+def resolve_amp_dtype(
+    compute_dtype_arg: str,
+    device: torch.device,
+    disable_amp: bool,
+) -> torch.dtype | None:
+    if device.type != "cuda" or disable_amp:
+        return None
+    if compute_dtype_arg == "auto":
+        return torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+
+    requested = QuantizationConfig.from_mapping({"compute_dtype": compute_dtype_arg}).compute_dtype
+    if requested in {torch.float16, torch.bfloat16}:
+        return requested
+    return None
 
 
 def build_dtu_scene_names(dtu_test_1200_path: Path, scans: Optional[str]) -> List[str]:
@@ -185,6 +225,10 @@ def main() -> None:
     if args.dtu_images_per_scene < 0:
         raise ValueError("dtu_images_per_scene must be >= 0")
 
+    quant_config = build_quant_config(args)
+    weight_qmax = quant_config.resolve_weight_qmax()
+    act_qmax = quant_config.resolve_activation_qmax()
+
     if args.calib_dir is None and args.dtu_test_1200_path is None:
         raise ValueError("Either --calib_dir or --dtu_test_1200_path must be provided")
 
@@ -214,14 +258,19 @@ def main() -> None:
         raise ValueError("No calibration images selected")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    amp_dtype = None
-    if device.type == "cuda" and not args.disable_amp:
-        amp_dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    amp_dtype = resolve_amp_dtype(args.compute_dtype, device=device, disable_amp=args.disable_amp)
 
     print(f"Calibration source: {source_type}")
     print(f"Calibration images: {total_images}")
     print(f"Calibration scenes: {len(scene_to_image_paths)}")
     print(f"Device: {device}")
+    print(
+        "Quantization config: "
+        f"W{quant_config.weight_bits}A{quant_config.activation_bits}, "
+        f"compute_dtype={dtype_to_string(quant_config.compute_dtype)}, "
+        f"weight_qmax={weight_qmax:.6g}, act_qmax={act_qmax:.6g}, "
+        f"activation_fake_quant={quant_config.activation_fake_quant}"
+    )
     if amp_dtype is not None:
         print(f"AMP dtype: {amp_dtype}")
 
@@ -251,7 +300,7 @@ def main() -> None:
                     images = load_and_preprocess_images(image_batch_str, mode=args.preprocess_mode).to(device)
 
                     amp_ctx = (
-                        torch.cuda.amp.autocast(dtype=amp_dtype)
+                        torch.amp.autocast("cuda", dtype=amp_dtype)
                         if (device.type == "cuda" and amp_dtype is not None)
                         else nullcontext()
                     )
@@ -268,8 +317,7 @@ def main() -> None:
     artifact = calibrate_attention_scales(
         model=model,
         run_calibration=run_calibration,
-        weight_qmax=args.weight_qmax,
-        act_qmax=args.act_qmax,
+        quant_config=quant_config,
         momentum=args.momentum,
     )
 
@@ -281,6 +329,9 @@ def main() -> None:
             "batch_size": int(args.batch_size),
             "preprocess_mode": args.preprocess_mode,
             "num_scenes": len(scene_to_image_paths),
+            "compute_dtype_arg": args.compute_dtype,
+            "calibration_amp_dtype": dtype_to_string(amp_dtype),
+            "disable_amp": bool(args.disable_amp),
         }
     )
 

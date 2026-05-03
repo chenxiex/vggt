@@ -1,6 +1,6 @@
 from vggt.models.vggt import VGGT
 import torch
-from typing import List, Optional
+from typing import Any, List, Optional
 from pathlib import Path
 from profiler import PredictionMemoryProfiler
 from vggt.utils.load_fn import load_and_preprocess_images
@@ -49,7 +49,7 @@ def load_model(
     model_path: Path,
     model_args: Optional[dict] = None,
     backend: str = "pseudo",
-    quant_config: Optional[dict] = None,
+    quant_config: Any | None = None,
 ) -> VGGT:
     if not model_path.exists():
         logger.info(f"Model doesn't exists. Downloading from {MODEL_URL}...")
