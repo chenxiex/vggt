@@ -85,6 +85,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="If set, include per-pair rotation/translation errors in output JSON.",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="pseudo",
+        choices=["pseudo", "torchao", "bitsandbytes", "trt_int8"],
+        help="Quantization backend to use.",
+    )
     return parser.parse_args()
 
 
@@ -386,8 +393,11 @@ def main() -> None:
     model = load_model(
         args.model_path,
         model_args={"enable_point": False, "enable_depth": False, "enable_track": False},
-        smoothquant_path=args.smoothquant_scale_path,
-        smoothquant_strict=not args.smoothquant_allow_missing,
+        backend=args.backend,
+        quant_config={
+            "smoothquant_path": args.smoothquant_scale_path,
+            "smoothquant_strict": not args.smoothquant_allow_missing,
+        },
     )
 
     all_scene_results: dict[str, dict] = {}

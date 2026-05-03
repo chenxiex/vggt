@@ -430,8 +430,11 @@ def run_worker(
         model = load_model(
             args.model_path,
             model_args={"enable_point": False, "enable_track": False},
-            smoothquant_path=args.smoothquant_scale_path,
-            smoothquant_strict=not args.smoothquant_allow_missing,
+            backend=args.backend,
+            quant_config={
+                "smoothquant_path": args.smoothquant_scale_path,
+                "smoothquant_strict": not args.smoothquant_allow_missing,
+            },
         )
 
     try:
@@ -482,6 +485,13 @@ if __name__ == "__main__":
                         help="Path to SmoothQuant calibration artifact (.pt) for W8A16 attention inference.")
     parser.add_argument('--smoothquant_allow_missing', action='store_true',
                         help="Allow missing SmoothQuant scales for some attention layers.")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="pseudo",
+        choices=["pseudo", "torchao", "bitsandbytes", "trt_int8"],
+        help="Quantization backend to use.",
+    )
     parser.add_argument('--dist_thresh', type=float, default=1.0,
                         help="Distance threshold for point cloud fusion consistency check.")
     parser.add_argument('--num_consist', type=int, default=4,
@@ -527,3 +537,4 @@ if __name__ == "__main__":
         else:
             logger.info("Running single-worker evaluation on CPU")
         run_worker(args, scene_names, worker_idx=0, gpu_id=selected_gpu)
+
