@@ -3,7 +3,7 @@
 	url = https://gh-proxy.org/https://github.com/chenxiex/DTUeval-python.git
 [submodule "ref/FastVGGT"]
 	path = ref/FastVGGT
-	url = https://github.com/mystorm16/FastVGGT.git
+	url = https://gh-proxy.org/https://github.com/chenxiex/FastVGGT.git
 [submodule "evaluation/eth3d-multi-view-evaluation"]
 	path = evaluation/eth3d-multi-view-evaluation
 	url = https://gh-proxy.org/https://github.com/chenxiex/eth3d-multi-view-evaluation.git
