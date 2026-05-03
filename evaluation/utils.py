@@ -29,6 +29,13 @@ else:
 logger = logging.getLogger(__name__)
 
 
+def run_quant_inference(model: VGGT, inputs: torch.Tensor):
+    backend = getattr(model, "_quant_backend", None)
+    if backend is None:
+        return model(inputs)
+    return backend.run(inputs)
+
+
 def _get_xy1_grid(height: int, width: int, device: torch.device) -> torch.Tensor:
     key = (str(device), height, width)
     cached = _XY1_CACHE.get(key)
@@ -87,6 +94,7 @@ def load_model(
     quant_backend = create_quant_backend(backend)
     model = quant_backend.prepare(model, quant_config=quant_config)
     model = quant_backend.convert(model)
+    setattr(model, "_quant_backend", quant_backend)
 
     model.eval()
     model = model.to(device)
@@ -114,7 +122,7 @@ def predict(images_path: List[Path], model: VGGT):
             profiler.record_snapshot("before_model_forward")
             with torch.amp.autocast('cuda', dtype=dtype): # pyright: ignore[reportPrivateImportUsage]
                 # Predict attributes including cameras, depth maps, and point maps
-                predictions = model(images)
+                predictions = run_quant_inference(model, images)
             profiler.record_snapshot("after_model_forward")
     except Exception as exc:
         profiler.record_error(exc)
