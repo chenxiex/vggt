@@ -91,7 +91,7 @@ def load_model(
     model.eval()
     model = model.to(device)
 
-    if device.type == "cuda":
+    if device.type == "cuda" and backend.lower() != "bitsandbytes":
         # Keep backbone weights in AMP dtype to save VRAM.
         model.aggregator.to(dtype=dtype)
 

@@ -13,6 +13,9 @@ requires-python = ">= 3.10"
 version = "0.0.1"
 
 [project.optional-dependencies]
+bnb = [
+    "bitsandbytes",
+]
 demo = [
     "gradio==5.17.1",
     "viser==0.2.23",
@@ -66,4 +69,3 @@ demo = { features = ["demo"], solve-group = "default" }
 # UV configuration
 [tool.uv.sources]
 lightglue = { git = "https://gh-proxy.org/https://github.com/cvg/LightGlue.git" }
-

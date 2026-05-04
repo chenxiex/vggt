@@ -226,6 +226,29 @@ For evaluation scripts, you can also pass the artifact directly:
 python evaluation/test_dtu.py ... --smoothquant_scale_path ./outputs/smoothquant_scales.pt
 ```
 
+You can run the same attention-layer SmoothQuant scales through the
+bitsandbytes backend. Install the optional dependency first:
+
+```bash
+pip install "vggt[bnb]"
+```
+
+Then select the backend in evaluation scripts:
+
+```bash
+python evaluation/test_dtu.py ... \
+  --backend bitsandbytes \
+  --smoothquant_scale_path ./outputs/smoothquant_w4a8_scales.pt
+```
+
+The bitsandbytes backend applies the same SmoothQuant transform as the pseudo
+backend: inputs are multiplied by `smooth_scale`, while the copied linear
+weights are divided by `smooth_scale` before bnb quantization. It supports
+`weight_bits=8` with `Linear8bitLt` and `weight_bits=4` with `Linear4bit`
+(`nf4`). bitsandbytes stores fp16/bf16 weights first and performs the actual
+quantization when the module is moved to CUDA, following the upstream
+bitsandbytes module behavior.
+
 ## Exporting to COLMAP Format
 
 We also support exporting VGGT's predictions directly to COLMAP format, by:

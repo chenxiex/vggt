@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 from torch import nn
 
 from vggt.layers.attention import Attention
 from vggt.quantization import QuantizationConfig, SmoothQuantLinear, SmoothQuantW8A16Linear
-from vggt.quantization.backends import PseudoQuantBackend
+from vggt.quantization.backends import (
+    BitsAndBytesQuantBackend,
+    BitsAndBytesSmoothQuantLinear,
+    PseudoQuantBackend,
+    create_quant_backend,
+)
 from vggt.quantization.smoothquant import load_smoothquant_artifact
 
 
@@ -30,6 +38,49 @@ def _tiny_scales() -> dict[str, float]:
         "frame_blocks.0.attn.qkv": 1.0,
         "frame_blocks.0.attn.proj": 1.0,
     }
+
+
+def _install_fake_bitsandbytes():
+    class _FakeLinear8bitLt(nn.Linear):
+        def __init__(
+            self,
+            in_features: int,
+            out_features: int,
+            bias: bool = True,
+            has_fp16_weights: bool = False,
+        ) -> None:
+            super().__init__(in_features, out_features, bias=bias)
+            self.has_fp16_weights = has_fp16_weights
+            self.last_input = None
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.last_input = x.detach().clone()
+            return super().forward(x)
+
+    class _FakeLinear4bit(nn.Linear):
+        def __init__(
+            self,
+            in_features: int,
+            out_features: int,
+            bias: bool = True,
+            compress_statistics: bool = True,
+            quant_type: str = "nf4",
+            compute_dtype: torch.dtype | None = None,
+        ) -> None:
+            super().__init__(in_features, out_features, bias=bias)
+            self.compress_statistics = compress_statistics
+            self.quant_type = quant_type
+            self.compute_dtype = compute_dtype
+            self.last_input = None
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.last_input = x.detach().clone()
+            return super().forward(x)
+
+    fake_bnb = types.SimpleNamespace(
+        nn=types.SimpleNamespace(Linear8bitLt=_FakeLinear8bitLt, Linear4bit=_FakeLinear4bit)
+    )
+    return mock.patch.dict(sys.modules, {"bitsandbytes": fake_bnb})
 
 
 class QuantizationConfigTest(unittest.TestCase):
@@ -142,6 +193,76 @@ class SmoothQuantArtifactAndBackendTest(unittest.TestCase):
             self.assertIsInstance(qkv, SmoothQuantLinear)
             self.assertEqual(qkv.weight_bits, 8)
             self.assertEqual(qkv.activation_bits, 16)
+
+
+class BitsAndBytesBackendTest(unittest.TestCase):
+    def test_factory_returns_bitsandbytes_backend(self) -> None:
+        self.assertIsInstance(create_quant_backend("bitsandbytes"), BitsAndBytesQuantBackend)
+
+    def test_missing_bitsandbytes_has_install_hint(self) -> None:
+        with mock.patch.dict(sys.modules, {"bitsandbytes": None}):
+            backend = BitsAndBytesQuantBackend()
+            with self.assertRaisesRegex(ImportError, "vggt\\[bnb\\].*bitsandbytes"):
+                backend.prepare(_TinyAttentionModel())
+
+    def test_wrapper_applies_smooth_scale_to_input_and_weight(self) -> None:
+        with _install_fake_bitsandbytes():
+            linear = nn.Linear(4, 3)
+            original_weight = linear.weight.detach().clone()
+            x = torch.randn(2, 4)
+
+            wrapper = BitsAndBytesSmoothQuantLinear.from_linear(
+                linear,
+                smooth_scale=2.0,
+                quant_config={"weight_bits": 8},
+            )
+            y = wrapper(x)
+
+        self.assertEqual(wrapper.weight_bits, 8)
+        self.assertTrue(torch.allclose(wrapper.bnb_linear.weight, original_weight / 2.0))
+        self.assertTrue(torch.allclose(wrapper.bnb_linear.last_input, x * 2.0))
+        self.assertEqual(y.shape, (2, 3))
+
+    def test_backend_uses_smoothquant_artifact_meta_and_explicit_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "scales.pt"
+            torch.save(
+                {
+                    "meta": {"weight_bits": 4, "activation_bits": 8},
+                    "scales": {
+                        "frame_blocks.0.attn.qkv": torch.tensor(2.0),
+                        "frame_blocks.0.attn.proj": torch.tensor(3.0),
+                    },
+                },
+                artifact_path,
+            )
+
+            with _install_fake_bitsandbytes():
+                model = _TinyAttentionModel()
+                original_weight = model.frame_blocks[0].attn.qkv.weight.detach().clone()
+                backend = BitsAndBytesQuantBackend()
+                backend.prepare(model, {"smoothquant_path": artifact_path})
+                qkv = model.frame_blocks[0].attn.qkv
+
+                self.assertIsInstance(qkv, BitsAndBytesSmoothQuantLinear)
+                self.assertEqual(qkv.weight_bits, 4)
+                self.assertEqual(float(qkv.smooth_scale.item()), 2.0)
+                self.assertEqual(qkv.bnb_linear.quant_type, "nf4")
+                self.assertTrue(torch.allclose(qkv.bnb_linear.weight, original_weight / 2.0))
+
+                model = _TinyAttentionModel()
+                backend.prepare(
+                    model,
+                    {
+                        "smoothquant_path": artifact_path,
+                        "weight_bits": 8,
+                        "activation_bits": 16,
+                    },
+                )
+                qkv = model.frame_blocks[0].attn.qkv
+                self.assertIsInstance(qkv, BitsAndBytesSmoothQuantLinear)
+                self.assertEqual(qkv.weight_bits, 8)
+                self.assertFalse(qkv.bnb_linear.has_fp16_weights)
 
 
 if __name__ == "__main__":
