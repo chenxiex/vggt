@@ -116,7 +116,7 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         strict: bool = True,
         quant_config: Any | None = None,
     ) -> dict[str, Any]:
-        """Apply SmoothQuant-based quantization to frame/global attention qkv/proj layers."""
+        """Apply SmoothQuant-based quantization to frame/global attention and MLP linear layers."""
         from vggt.quantization.smoothquant import apply_smoothquant, load_smoothquant_artifact
 
         if isinstance(scales_or_artifact_or_path, (str, Path)):

@@ -11,7 +11,7 @@ from vggt.quantization.backends.base import QuantBackend
 from vggt.quantization.config import QuantizationConfig, dtype_to_string
 from vggt.quantization.smoothquant import (
     DEFAULT_ATTENTION_MODULE_PREFIXES,
-    find_attention_linear_layers,
+    find_quantizable_linear_layers,
     load_smoothquant_artifact,
     normalize_scale_dict,
 )
@@ -157,7 +157,7 @@ class BitsAndBytesSmoothQuantLinear(nn.Module):
 
 
 class BitsAndBytesQuantBackend(QuantBackend):
-    """bitsandbytes backend for attention qkv/proj linear layers."""
+    """bitsandbytes backend for frame/global attention and MLP linear layers."""
 
     def __init__(self) -> None:
         self._model = None
@@ -176,7 +176,7 @@ class BitsAndBytesQuantBackend(QuantBackend):
         if config.weight_bits not in {4, 8}:
             raise ValueError("bitsandbytes backend only supports weight_bits=4 or weight_bits=8")
 
-        layers = find_attention_linear_layers(model, module_prefixes=DEFAULT_ATTENTION_MODULE_PREFIXES)
+        layers = find_quantizable_linear_layers(model, module_prefixes=DEFAULT_ATTENTION_MODULE_PREFIXES)
         missing: list[str] = []
         replaced: list[str] = []
 
@@ -203,7 +203,7 @@ class BitsAndBytesQuantBackend(QuantBackend):
 
         if config.smoothquant_path is not None and config.smoothquant_strict and missing:
             raise KeyError(
-                "Missing SmoothQuant scales for attention linear layers: "
+                "Missing SmoothQuant scales for quantizable frame/global linear layers: "
                 + ", ".join(sorted(missing)[:10])
                 + (" ..." if len(missing) > 10 else "")
             )
@@ -237,6 +237,6 @@ class BitsAndBytesQuantBackend(QuantBackend):
             "name": "bitsandbytes",
             "bit_widths": ["w4", "w8"],
             "compute_dtypes": ["input", "float16", "bfloat16", "float32"],
-            "operators": ["linear(qkv,proj)", "smoothquant_scale"],
+            "operators": ["linear(qkv,proj,mlp.fc1,mlp.fc2)", "smoothquant_scale"],
             "devices": ["cuda"],
         }

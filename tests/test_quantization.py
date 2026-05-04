@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from vggt.layers.attention import Attention
+from vggt.layers.mlp import Mlp
 from vggt.quantization import QuantizationConfig, SmoothQuantLinear, SmoothQuantW8A16Linear
 from vggt.quantization.backends import (
     BitsAndBytesQuantBackend,
@@ -25,6 +26,7 @@ class _TinyBlock(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.attn = Attention(dim=4, num_heads=2)
+        self.mlp = Mlp(in_features=4, hidden_features=8)
 
 
 class _TinyAttentionModel(nn.Module):
@@ -45,6 +47,8 @@ def _tiny_scales() -> dict[str, float]:
     return {
         "frame_blocks.0.attn.qkv": 1.0,
         "frame_blocks.0.attn.proj": 1.0,
+        "frame_blocks.0.mlp.fc1": 1.0,
+        "frame_blocks.0.mlp.fc2": 1.0,
     }
 
 
@@ -182,7 +186,9 @@ class SmoothQuantArtifactAndBackendTest(unittest.TestCase):
             backend = PseudoQuantBackend()
             backend.prepare(model, {"smoothquant_path": artifact_path})
             qkv = model.frame_blocks[0].attn.qkv
+            fc1 = model.frame_blocks[0].mlp.fc1
             self.assertIsInstance(qkv, SmoothQuantLinear)
+            self.assertIsInstance(fc1, SmoothQuantLinear)
             self.assertEqual(qkv.weight_bits, 4)
             self.assertEqual(qkv.activation_bits, 8)
             y = model.frame_blocks[0].attn(torch.randn(1, 3, 4))
@@ -198,7 +204,9 @@ class SmoothQuantArtifactAndBackendTest(unittest.TestCase):
                 },
             )
             qkv = model.frame_blocks[0].attn.qkv
+            fc1 = model.frame_blocks[0].mlp.fc1
             self.assertIsInstance(qkv, SmoothQuantLinear)
+            self.assertIsInstance(fc1, SmoothQuantLinear)
             self.assertEqual(qkv.weight_bits, 8)
             self.assertEqual(qkv.activation_bits, 16)
 
@@ -240,6 +248,8 @@ class BitsAndBytesBackendTest(unittest.TestCase):
                     "scales": {
                         "frame_blocks.0.attn.qkv": torch.tensor(2.0),
                         "frame_blocks.0.attn.proj": torch.tensor(3.0),
+                        "frame_blocks.0.mlp.fc1": torch.tensor(4.0),
+                        "frame_blocks.0.mlp.fc2": torch.tensor(5.0),
                     },
                 },
                 artifact_path,
@@ -251,10 +261,13 @@ class BitsAndBytesBackendTest(unittest.TestCase):
                 backend = BitsAndBytesQuantBackend()
                 backend.prepare(model, {"smoothquant_path": artifact_path})
                 qkv = model.frame_blocks[0].attn.qkv
+                fc1 = model.frame_blocks[0].mlp.fc1
 
                 self.assertIsInstance(qkv, BitsAndBytesSmoothQuantLinear)
+                self.assertIsInstance(fc1, BitsAndBytesSmoothQuantLinear)
                 self.assertEqual(qkv.weight_bits, 4)
                 self.assertEqual(float(qkv.smooth_scale.item()), 2.0)
+                self.assertEqual(float(fc1.smooth_scale.item()), 4.0)
                 self.assertEqual(qkv.bnb_linear.quant_type, "nf4")
                 self.assertTrue(torch.allclose(qkv.bnb_linear.weight, original_weight / 2.0))
 
@@ -268,7 +281,9 @@ class BitsAndBytesBackendTest(unittest.TestCase):
                     },
                 )
                 qkv = model.frame_blocks[0].attn.qkv
+                fc1 = model.frame_blocks[0].mlp.fc1
                 self.assertIsInstance(qkv, BitsAndBytesSmoothQuantLinear)
+                self.assertIsInstance(fc1, BitsAndBytesSmoothQuantLinear)
                 self.assertEqual(qkv.weight_bits, 8)
                 self.assertFalse(qkv.bnb_linear.has_fp16_weights)
 

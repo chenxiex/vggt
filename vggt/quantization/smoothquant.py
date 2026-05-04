@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from vggt.layers.attention import Attention
+from vggt.layers.mlp import Mlp
 from vggt.quantization.config import QuantizationConfig, dtype_to_string
 
 DEFAULT_WEIGHT_QMAX = 127.0
@@ -48,6 +49,27 @@ def find_attention_linear_layers(
             if isinstance(linear, nn.Linear):
                 full_name = f"{module_name}.{linear_name}" if module_name else linear_name
                 layers[full_name] = linear
+    return layers
+
+
+def find_quantizable_linear_layers(
+    model: nn.Module,
+    module_prefixes: tuple[str, ...] | None = None,
+) -> Dict[str, nn.Linear]:
+    """Return quantizable frame/global attention and MLP Linear layers."""
+    layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
+
+    for module_name, module in model.named_modules():
+        if not isinstance(module, Mlp):
+            continue
+        if module_prefixes is not None and not _module_name_matches_prefixes(module_name, module_prefixes):
+            continue
+        for linear_name in ("fc1", "fc2"):
+            linear = getattr(module, linear_name, None)
+            if isinstance(linear, nn.Linear):
+                full_name = f"{module_name}.{linear_name}" if module_name else linear_name
+                layers[full_name] = linear
+
     return layers
 
 
@@ -154,7 +176,7 @@ def calibrate_attention_scales(
     resolved_weight_qmax = config.resolve_weight_qmax()
     resolved_act_qmax = config.resolve_activation_qmax()
 
-    layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
+    layers = find_quantizable_linear_layers(model, module_prefixes=module_prefixes)
     act_max: Dict[str, float] = {name: 0.0 for name in layers}
     weight_max: Dict[str, float] = {
         layer_name: float(linear.weight.detach().abs().amax().item()) for layer_name, linear in layers.items()
@@ -419,7 +441,7 @@ def apply_smoothquant(
     eps: float = EPS,
     module_prefixes: tuple[str, ...] = DEFAULT_ATTENTION_MODULE_PREFIXES,
 ) -> Dict[str, Any]:
-    """Replace frame/global attention qkv/proj linear layers with SmoothQuantLinear."""
+    """Replace frame/global attention qkv/proj and MLP fc1/fc2 layers with SmoothQuantLinear."""
     config = QuantizationConfig.from_any(quant_config).with_artifact_meta(_artifact_meta(scales_or_artifact))
     if strict is not None:
         config = config.with_updates(smoothquant_strict=strict)
@@ -427,7 +449,7 @@ def apply_smoothquant(
         config = config.with_updates(weight_qmax=weight_qmax)
 
     scales = normalize_scale_dict(scales_or_artifact)
-    layers = find_attention_linear_layers(model, module_prefixes=module_prefixes)
+    layers = find_quantizable_linear_layers(model, module_prefixes=module_prefixes)
 
     missing = []
     replaced = []
@@ -450,7 +472,7 @@ def apply_smoothquant(
 
     if config.smoothquant_strict and missing:
         raise KeyError(
-            "Missing SmoothQuant scales for attention linear layers: "
+            "Missing SmoothQuant scales for quantizable frame/global linear layers: "
             + ", ".join(sorted(missing)[:10])
             + (" ..." if len(missing) > 10 else "")
         )

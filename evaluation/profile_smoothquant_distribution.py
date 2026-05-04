@@ -12,7 +12,7 @@ from urllib.request import urlretrieve
 import torch
 
 from vggt.models.vggt import VGGT
-from vggt.quantization.smoothquant import find_attention_linear_layers
+from vggt.quantization.smoothquant import find_quantizable_linear_layers
 from vggt.utils.load_fn import load_and_preprocess_images
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
@@ -526,17 +526,17 @@ def main() -> None:
     if device.type == "cuda" and amp_dtype is not None:
         model.aggregator.to(dtype=amp_dtype)
 
-    all_layers = find_attention_linear_layers(model)
+    all_layers = find_quantizable_linear_layers(model)
     layers = filter_target_layers(all_layers)
     if not layers:
         raise RuntimeError(
-            "No attention qkv/proj linear layers found under frame/global blocks. "
+            "No quantizable linear layers found under frame/global blocks. "
             f"Current prefixes: {TARGET_LAYER_PREFIXES}"
         )
 
     smooth_scale_design = infer_smooth_scale_design(layers.keys())
     point_granularity = "projection" if smooth_scale_design == SCALE_DESIGN_PER_PROJECTION else "block"
-    print(f"Total attention linear layers in model: {len(all_layers)}")
+    print(f"Total quantizable linear layers in model: {len(all_layers)}")
     print(f"Selected frame/global linear layers: {len(layers)}")
     print(f"Smooth scale design: {smooth_scale_design} ({point_granularity} points)")
 
@@ -632,7 +632,7 @@ def main() -> None:
             "amp_dtype": str(amp_dtype) if amp_dtype is not None else None,
             "layer_scope": "frame_global_only",
             "layer_name_prefixes": list(TARGET_LAYER_PREFIXES),
-            "num_layers_total_attention_linear": int(len(all_layers)),
+            "num_layers_total_quantizable_linear": int(len(all_layers)),
             "num_layers_selected": int(len(layers)),
             "smooth_scale_design": smooth_scale_design,
             "point_granularity": point_granularity,

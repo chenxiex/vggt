@@ -38,6 +38,6 @@ class PseudoQuantBackend(QuantBackend):
             "name": "pseudo",
             "bit_widths": ["w2-w8", "a2-a16"],
             "compute_dtypes": ["input", "float32", "float16", "bfloat16"],
-            "operators": ["linear(qkv,proj)"],
+            "operators": ["linear(qkv,proj,mlp.fc1,mlp.fc2)"],
             "devices": ["cpu", "cuda"],
         }

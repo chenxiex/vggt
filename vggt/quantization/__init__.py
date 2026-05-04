@@ -7,6 +7,7 @@ from .smoothquant import (
     calibrate_attention_scales,
     compute_smooth_scale,
     find_attention_linear_layers,
+    find_quantizable_linear_layers,
     load_smoothquant_artifact,
     save_smoothquant_artifact,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "calibrate_attention_scales",
     "compute_smooth_scale",
     "find_attention_linear_layers",
+    "find_quantizable_linear_layers",
     "load_smoothquant_artifact",
     "save_smoothquant_artifact",
 ]
