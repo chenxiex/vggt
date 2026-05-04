@@ -8,7 +8,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-from utils import load_model, predict, write_ply
+from utils import add_quant_config_args, build_quant_config_from_args, load_model, predict, write_ply
 from vggt.models.vggt import VGGT
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
@@ -92,6 +92,7 @@ def parse_args() -> argparse.Namespace:
         choices=["pseudo", "torchao", "bitsandbytes", "trt_int8"],
         help="Quantization backend to use.",
     )
+    add_quant_config_args(parser)
     return parser.parse_args()
 
 
@@ -803,10 +804,7 @@ def main() -> None:
             "enable_track": False,
         },
         backend=args.backend,
-        quant_config={
-            "smoothquant_path": args.smoothquant_scale_path,
-            "smoothquant_strict": not args.smoothquant_allow_missing,
-        },
+        quant_config=build_quant_config_from_args(args),
     )
 
     summary = []

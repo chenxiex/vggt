@@ -14,7 +14,17 @@ from typing import Optional
 from torch.multiprocessing.spawn import spawn
 import torch.nn.functional as F
 
-from utils import load_model, predict, read_pfm, upsample_image, upsample_images, write_ply, open3d_filter
+from utils import (
+    add_quant_config_args,
+    build_quant_config_from_args,
+    load_model,
+    open3d_filter,
+    predict,
+    read_pfm,
+    upsample_image,
+    upsample_images,
+    write_ply,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -376,10 +386,7 @@ def run_worker(
         args.model_path,
         model_args={"enable_point": False, "enable_track": False},
         backend=args.backend,
-        quant_config={
-            "smoothquant_path": args.smoothquant_scale_path,
-            "smoothquant_strict": not args.smoothquant_allow_missing,
-        },
+        quant_config=build_quant_config_from_args(args),
     )
 
     try:
@@ -432,6 +439,7 @@ if __name__ == "__main__":
         choices=["pseudo", "torchao", "bitsandbytes", "trt_int8"],
         help="Quantization backend to use.",
     )
+    add_quant_config_args(parser)
     parser.add_argument('--dist_thresh', type=float, default=1.0,
                         help="Distance threshold for point cloud fusion consistency check.")
     parser.add_argument('--num_consist', type=int, default=4,

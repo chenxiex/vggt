@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-from utils import load_model, predict
+from utils import add_quant_config_args, build_quant_config_from_args, load_model, predict
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
 
@@ -92,6 +92,7 @@ def parse_args() -> argparse.Namespace:
         choices=["pseudo", "torchao", "bitsandbytes", "trt_int8"],
         help="Quantization backend to use.",
     )
+    add_quant_config_args(parser)
     return parser.parse_args()
 
 
@@ -394,10 +395,7 @@ def main() -> None:
         args.model_path,
         model_args={"enable_point": False, "enable_depth": False, "enable_track": False},
         backend=args.backend,
-        quant_config={
-            "smoothquant_path": args.smoothquant_scale_path,
-            "smoothquant_strict": not args.smoothquant_allow_missing,
-        },
+        quant_config=build_quant_config_from_args(args),
     )
 
     all_scene_results: dict[str, dict] = {}
@@ -487,6 +485,11 @@ def main() -> None:
             "seed": args.seed,
             "smoothquant_scale_path": str(args.smoothquant_scale_path) if args.smoothquant_scale_path is not None else None,
             "smoothquant_allow_missing": args.smoothquant_allow_missing,
+            "weight_bits": args.weight_bits,
+            "activation_bits": args.activation_bits,
+            "compute_dtype": args.compute_dtype,
+            "weight_qmax": args.weight_qmax,
+            "activation_qmax": args.activation_qmax,
         },
         "overall": overall_metrics,
         "scenes": all_scene_results,

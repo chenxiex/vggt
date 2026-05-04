@@ -1,4 +1,5 @@
 from vggt.models.vggt import VGGT
+import argparse
 import torch
 from typing import Any, List, Optional
 from pathlib import Path
@@ -27,6 +28,60 @@ else:
     dtype = torch.float32
 
 logger = logging.getLogger(__name__)
+
+
+def add_quant_config_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--weight_bits",
+        type=int,
+        default=None,
+        help="Optional quantized weight bit width override for QuantizationConfig.",
+    )
+    parser.add_argument(
+        "--activation_bits",
+        type=int,
+        default=None,
+        help="Optional activation bit width override for QuantizationConfig.",
+    )
+    parser.add_argument(
+        "--compute_dtype",
+        type=str,
+        default=None,
+        choices=["input", "auto", "float32", "fp32", "float16", "fp16", "bfloat16", "bf16"],
+        help="Optional compute dtype override for QuantizationConfig.",
+    )
+    parser.add_argument(
+        "--weight_qmax",
+        type=float,
+        default=None,
+        help="Optional quantized weight range max override for QuantizationConfig.",
+    )
+    parser.add_argument(
+        "--activation_qmax",
+        type=float,
+        default=None,
+        help="Optional activation range max override for QuantizationConfig.",
+    )
+
+
+def build_quant_config_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    quant_config: dict[str, Any] = {
+        "smoothquant_path": args.smoothquant_scale_path,
+        "smoothquant_strict": not args.smoothquant_allow_missing,
+    }
+
+    for field_name in (
+        "weight_bits",
+        "activation_bits",
+        "compute_dtype",
+        "weight_qmax",
+        "activation_qmax",
+    ):
+        value = getattr(args, field_name, None)
+        if value is not None:
+            quant_config[field_name] = value
+
+    return quant_config
 
 
 def _get_xy1_grid(height: int, width: int, device: torch.device) -> torch.Tensor:
