@@ -33,6 +33,14 @@ class _TinyAttentionModel(nn.Module):
         self.frame_blocks = nn.ModuleList([_TinyBlock()])
 
 
+class _TinyAggregatorModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.aggregator = nn.Module()
+        self.aggregator.frame_blocks = nn.ModuleList([_TinyBlock()])
+        self.aggregator.extra = nn.Linear(4, 4)
+
+
 def _tiny_scales() -> dict[str, float]:
     return {
         "frame_blocks.0.attn.qkv": 1.0,
@@ -263,6 +271,21 @@ class BitsAndBytesBackendTest(unittest.TestCase):
                 self.assertIsInstance(qkv, BitsAndBytesSmoothQuantLinear)
                 self.assertEqual(qkv.weight_bits, 8)
                 self.assertFalse(qkv.bnb_linear.has_fp16_weights)
+
+    def test_backend_casts_non_bnb_aggregator_tensors_to_compute_dtype(self) -> None:
+        with _install_fake_bitsandbytes():
+            model = _TinyAggregatorModel()
+            backend = BitsAndBytesQuantBackend()
+            backend.prepare(model, {"weight_bits": 8, "compute_dtype": "float16"})
+
+        qkv = model.aggregator.frame_blocks[0].attn.qkv
+        proj = model.aggregator.frame_blocks[0].attn.proj
+
+        self.assertIsInstance(qkv, BitsAndBytesSmoothQuantLinear)
+        self.assertIsInstance(proj, BitsAndBytesSmoothQuantLinear)
+        self.assertEqual(qkv.bnb_linear.weight.dtype, torch.float32)
+        self.assertEqual(proj.bnb_linear.weight.dtype, torch.float32)
+        self.assertEqual(model.aggregator.extra.weight.dtype, torch.float16)
 
 
 if __name__ == "__main__":

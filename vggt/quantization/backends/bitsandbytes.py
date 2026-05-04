@@ -51,6 +51,42 @@ def _copy_scaled_linear_weights(
             target_bias.copy_(source.bias.detach().to(device=target_bias.device, dtype=target_bias.dtype))
 
 
+def _is_under_replaced_layer(tensor_name: str, replaced_layers: set[str]) -> bool:
+    return any(tensor_name == layer_name or tensor_name.startswith(f"{layer_name}.") for layer_name in replaced_layers)
+
+
+def _cast_non_bnb_aggregator_tensors(model: Any, dtype: torch.dtype | None, replaced_layers: list[str]) -> int:
+    if dtype is None:
+        return 0
+
+    aggregator = getattr(model, "aggregator", None)
+    if aggregator is None:
+        return 0
+
+    excluded = set(replaced_layers)
+    excluded.update(
+        layer_name.removeprefix("aggregator.")
+        for layer_name in replaced_layers
+        if layer_name.startswith("aggregator.")
+    )
+    casted = 0
+
+    with torch.no_grad():
+        for name, parameter in aggregator.named_parameters(recurse=True):
+            if _is_under_replaced_layer(name, excluded) or not parameter.is_floating_point():
+                continue
+            parameter.data = parameter.data.to(dtype=dtype)
+            casted += 1
+
+        for name, buffer in aggregator.named_buffers(recurse=True):
+            if _is_under_replaced_layer(name, excluded) or not buffer.is_floating_point():
+                continue
+            buffer.data = buffer.data.to(dtype=dtype)
+            casted += 1
+
+    return casted
+
+
 class BitsAndBytesSmoothQuantLinear(nn.Module):
     """bitsandbytes linear wrapper that applies SmoothQuant input scaling."""
 
@@ -172,11 +208,17 @@ class BitsAndBytesQuantBackend(QuantBackend):
                 + (" ..." if len(missing) > 10 else "")
             )
 
+        casted_aggregator_tensors = _cast_non_bnb_aggregator_tensors(
+            model,
+            dtype=config.compute_dtype,
+            replaced_layers=replaced,
+        )
         unused = sorted(set(scales.keys()) - set(layers.keys()))
         self._summary = {
             "replaced": len(replaced),
             "missing": missing,
             "unused": unused,
+            "casted_aggregator_tensors": casted_aggregator_tensors,
             "quant_config": config.to_meta(),
         }
         return model

@@ -15,6 +15,8 @@ import os
 import logging
 
 from vggt.quantization.backends import create_quant_backend
+from vggt.quantization.config import QuantizationConfig
+from vggt.quantization.smoothquant import load_smoothquant_artifact
 
 HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://huggingface.co")
 MODEL_URL = f"{HF_ENDPOINT}/facebook/VGGT-1B/resolve/main/model.pt"
@@ -84,6 +86,16 @@ def build_quant_config_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return quant_config
 
 
+def _resolve_requested_compute_dtype(quant_config: Any | None) -> torch.dtype | None:
+    config = QuantizationConfig.from_any(quant_config)
+    if config.smoothquant_path is not None:
+        artifact = load_smoothquant_artifact(config.smoothquant_path)
+        meta = artifact.get("meta")
+        if isinstance(meta, dict):
+            config = config.with_artifact_meta(meta)
+    return config.compute_dtype
+
+
 def _get_xy1_grid(height: int, width: int, device: torch.device) -> torch.Tensor:
     key = (str(device), height, width)
     cached = _XY1_CACHE.get(key)
@@ -146,9 +158,9 @@ def load_model(
     model.eval()
     model = model.to(device)
 
-    if device.type == "cuda" and backend.lower() != "bitsandbytes":
-        # Keep backbone weights in AMP dtype to save VRAM.
-        model.aggregator.to(dtype=dtype)
+    compute_dtype = _resolve_requested_compute_dtype(quant_config)
+    if device.type == "cuda" and backend.lower() != "bitsandbytes" and compute_dtype is not None:
+        model.aggregator.to(dtype=compute_dtype)
 
     return model
 
