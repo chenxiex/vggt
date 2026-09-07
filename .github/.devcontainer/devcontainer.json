@@ -8,17 +8,24 @@
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	"features": {
-		"ghcr.io/devcontainers/features/nvidia-cuda:3": {}
+		"ghcr.io/devcontainers/features/nvidia-cuda:3.0.0": {}
 	},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "uv venv --clear",
+	// "postCreateCommand": "uv venv --clear",
 
 	// Configure tool-specific properties.
-	// "customizations": {},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"charliermarsh.ruff",
+				"astral-sh.ty"
+			]
+		}
+	},
 
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
@@ -32,6 +39,6 @@
         "VIRTUAL_ENV": "/cache/venv-for${localWorkspaceFolder}"
 	},
 	"mounts": [
-		"source=${localEnv:HOME}/.cache,target=/cache,type=bind"
+		"source=python-uv-cache,target=/cache,type=volume"
 	]
 }
