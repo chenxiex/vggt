@@ -25,6 +25,8 @@ demo = [
     "requests",
     "trimesh",
     "matplotlib",
+    "torch",
+    "torchvision",
 ]
 evaluation = [
     "lightglue @ git+https://gh-proxy.org/https://github.com/cvg/LightGlue.git",
